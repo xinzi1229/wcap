@@ -57,6 +57,9 @@ __declspec(dllexport) DWORD NvOptimusEnablement = 1;
 #define WCAP_VIDEO_UPDATE_TIMER     2
 #define WCAP_VIDEO_UPDATE_INTERVAL  100 // msec
 
+#define WCAP_INDICATOR_TIMER        3
+#define WCAP_INDICATOR_INTERVAL     2000 // msec, re-assert topmost over fullscreen games
+
 #define CMD_WCAP     1
 #define CMD_QUIT     2
 #define CMD_SETTINGS 3
@@ -95,16 +98,32 @@ __declspec(dllexport) DWORD NvOptimusEnablement = 1;
 
 typedef struct
 {
-	WORD Freq; // Hz
+	WORD Freq; // Hz, 0 means silence
 	WORD Msec; // duration in milliseconds
 }
 SoundTone;
 
-static const SoundTone gSoundTonesStart[] = { { 880, 70 }, { 1320, 90 } };
-static const SoundTone gSoundTonesStop[]  = { { 1320, 70 }, { 660, 110 } };
+// start: single short beep, stop: two beeps
+static const SoundTone gSoundTonesStart[] = { { 880, 110 } };
+static const SoundTone gSoundTonesStop[]  = { { 660, 80 }, { 0, 60 }, { 660, 80 } };
 
 static BYTE gSoundStart[WCAP_SOUND_MAX_SIZE];
 static BYTE gSoundStop[WCAP_SOUND_MAX_SIZE];
+
+// recording status indicator (small always-on-top dot, visible above fullscreen games)
+#define WCAP_INDICATOR_CLASS   L"wcap_indicator_window_class"
+#define WCAP_INDICATOR_SIZE    20   // logical pixels at 96 dpi
+#define WCAP_INDICATOR_MARGIN  16   // logical pixels from screen corner
+
+#ifndef WDA_NONE
+#define WDA_NONE               0x00000000
+#endif
+#ifndef WDA_MONITOR
+#define WDA_MONITOR            0x00000001
+#endif
+#ifndef WDA_EXCLUDEFROMCAPTURE
+#define WDA_EXCLUDEFROMCAPTURE 0x00000011
+#endif
 
 // constants
 static WCHAR gConfigPath[MAX_PATH];
@@ -150,6 +169,14 @@ static Config gConfig;
 static AudioCapture gAudio;
 static ScreenCapture gCapture;
 static Encoder gEncoder;
+
+// status indicator state
+static HWND gIndicator;
+static BOOL gIndicatorShown;
+static BOOL gIndicatorRecording;
+static int gIndicatorSize;
+static int gIndicatorX;
+static int gIndicatorY;
 
 static void ShowNotification(LPCWSTR Message, LPCWSTR Title, DWORD Flags)
 {
@@ -259,6 +286,17 @@ static void Sound__Build(BYTE* Buffer, const SoundTone* Tones, int ToneCount)
 	for (int t = 0; t < ToneCount; t++)
 	{
 		int Count = WCAP_SOUND_RATE * Tones[t].Msec / 1000;
+
+		if (Tones[t].Freq == 0)
+		{
+			// silence, used as a gap between beeps
+			for (int i = 0; i < Count; i++)
+			{
+				*Samples++ = 0;
+			}
+			continue;
+		}
+
 		double Step = TwoPi * Tones[t].Freq / WCAP_SOUND_RATE;
 		int Fade = WCAP_SOUND_RATE / 200; // 5 msec fade to avoid clicks
 
@@ -298,6 +336,231 @@ static void Sound_Play(BOOL Start)
 	}
 	// SND_ASYNC keeps capture thread free, buffers stay valid for whole process lifetime
 	PlaySoundW((LPCWSTR)(Start ? gSoundStart : gSoundStop), NULL, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+}
+
+// status indicator: small circle in the top-right corner of the recorded monitor.
+// green while recording, red otherwise. It is excluded from capture, so it never
+// shows up in the video and never causes a capture feedback loop.
+
+static HMONITOR gIndicatorMonitor;
+
+static LRESULT CALLBACK Indicator__WindowProc(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
+{
+	if (Message == WM_NCHITTEST)
+	{
+		return HTTRANSPARENT;
+	}
+	if (Message == WM_MOUSEACTIVATE)
+	{
+		return MA_NOACTIVATE;
+	}
+	return DefWindowProcW(Window, Message, WParam, LParam);
+}
+
+static UINT Indicator__MonitorDpi(HMONITOR Monitor)
+{
+	typedef HRESULT (WINAPI* GetDpiForMonitorFn)(HMONITOR, int, UINT*, UINT*);
+
+	static GetDpiForMonitorFn GetDpiForMonitor;
+	static BOOL Queried;
+
+	if (!Queried)
+	{
+		Queried = TRUE;
+		HMODULE Shcore = LoadLibraryW(L"shcore.dll");
+		if (Shcore)
+		{
+			GetDpiForMonitor = (GetDpiForMonitorFn)(void*)GetProcAddress(Shcore, "GetDpiForMonitor");
+		}
+	}
+
+	UINT DpiX = 0, DpiY = 0;
+	if (GetDpiForMonitor && SUCCEEDED(GetDpiForMonitor(Monitor, 0 /* MDT_EFFECTIVE_DPI */, &DpiX, &DpiY)) && DpiX != 0)
+	{
+		return DpiX;
+	}
+
+	HDC Context = GetDC(NULL);
+	int Dpi = GetDeviceCaps(Context, LOGPIXELSX);
+	ReleaseDC(NULL, Context);
+	return Dpi > 0 ? (UINT)Dpi : 96;
+}
+
+static void Indicator__Paint(int Size, int X, int Y, BOOL Recording)
+{
+	BITMAPINFO Info;
+	ZeroMemory(&Info, sizeof(Info));
+	Info.bmiHeader.biSize = sizeof(Info.bmiHeader);
+	Info.bmiHeader.biWidth = Size;
+	Info.bmiHeader.biHeight = -Size; // top-down
+	Info.bmiHeader.biPlanes = 1;
+	Info.bmiHeader.biBitCount = 32;
+	Info.bmiHeader.biCompression = BI_RGB;
+
+	void* Bits = NULL;
+	HDC Screen = GetDC(NULL);
+	HDC Context = CreateCompatibleDC(Screen);
+	HBITMAP Bitmap = CreateDIBSection(Screen, &Info, DIB_RGB_COLORS, &Bits, NULL, 0);
+	if (Bitmap == NULL || Bits == NULL)
+	{
+		if (Bitmap)
+		{
+			DeleteObject(Bitmap);
+		}
+		DeleteDC(Context);
+		ReleaseDC(NULL, Screen);
+		return;
+	}
+	HGDIOBJ OldBitmap = SelectObject(Context, Bitmap);
+
+	const double ColorR = Recording ?  46.0 : 231.0;
+	const double ColorG = Recording ? 204.0 :  76.0;
+	const double ColorB = Recording ? 113.0 :  60.0;
+
+	const double Center     = Size / 2.0;
+	const double DotRadius  = Center - 1.5;
+	const double RingRadius = DotRadius + 1.5;
+	const double RingAlpha  = 0.55;
+
+	BYTE* Pixel = (BYTE*)Bits;
+	for (int y = 0; y < Size; y++)
+	{
+		for (int x = 0; x < Size; x++)
+		{
+			double Dx = x + 0.5 - Center;
+			double Dy = y + 0.5 - Center;
+			double Distance = sqrt(Dx * Dx + Dy * Dy);
+
+			double Dot = DotRadius + 0.5 - Distance;
+			Dot = Dot < 0.0 ? 0.0 : (Dot > 1.0 ? 1.0 : Dot);
+
+			double Ring = RingRadius + 0.5 - Distance;
+			Ring = Ring < 0.0 ? 0.0 : (Ring > 1.0 ? 1.0 : Ring);
+
+			// dark ring underneath the colored dot, keeps it readable on any background
+			double Alpha = Dot + RingAlpha * Ring * (1.0 - Dot);
+
+			// premultiplied alpha
+			Pixel[0] = (BYTE)(ColorB * Dot);
+			Pixel[1] = (BYTE)(ColorG * Dot);
+			Pixel[2] = (BYTE)(ColorR * Dot);
+			Pixel[3] = (BYTE)(Alpha * 255.0);
+			Pixel += 4;
+		}
+	}
+
+	BLENDFUNCTION Blend;
+	Blend.BlendOp = AC_SRC_OVER;
+	Blend.BlendFlags = 0;
+	Blend.SourceConstantAlpha = 255;
+	Blend.AlphaFormat = AC_SRC_ALPHA;
+
+	POINT Destination = { X, Y };
+	POINT Source = { 0, 0 };
+	SIZE WindowSize = { Size, Size };
+
+	UpdateLayeredWindow(gIndicator, NULL, &Destination, &WindowSize, Context, &Source, 0, &Blend, ULW_ALPHA);
+
+	SelectObject(Context, OldBitmap);
+	DeleteObject(Bitmap);
+	DeleteDC(Context);
+	ReleaseDC(NULL, Screen);
+}
+
+static void Indicator_Update(void)
+{
+	if (gIndicator == NULL)
+	{
+		return;
+	}
+
+	// hidden when disabled or while selecting the recording region
+	if (!gConfig.ShowIndicator || gRectContext != NULL)
+	{
+		if (gIndicatorShown)
+		{
+			ShowWindow(gIndicator, SW_HIDE);
+			gIndicatorShown = FALSE;
+		}
+		return;
+	}
+
+	HMONITOR Monitor;
+	if (gRecording)
+	{
+		POINT Center = { (gCapture.Rect.left + gCapture.Rect.right) / 2, (gCapture.Rect.top + gCapture.Rect.bottom) / 2 };
+		Monitor = MonitorFromPoint(Center, MONITOR_DEFAULTTOPRIMARY);
+	}
+	else if (gIndicatorMonitor != NULL)
+	{
+		Monitor = gIndicatorMonitor;
+	}
+	else
+	{
+		Monitor = MonitorFromPoint((POINT){ 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
+	}
+
+	MONITORINFO MonitorInfo;
+	ZeroMemory(&MonitorInfo, sizeof(MonitorInfo));
+	MonitorInfo.cbSize = sizeof(MonitorInfo);
+	if (!GetMonitorInfoW(Monitor, &MonitorInfo))
+	{
+		Monitor = MonitorFromPoint((POINT){ 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
+		if (!GetMonitorInfoW(Monitor, &MonitorInfo))
+		{
+			return;
+		}
+	}
+	gIndicatorMonitor = Monitor;
+
+	UINT Dpi = Indicator__MonitorDpi(Monitor);
+	int Size = MulDiv(WCAP_INDICATOR_SIZE, (int)Dpi, 96);
+	int Margin = MulDiv(WCAP_INDICATOR_MARGIN, (int)Dpi, 96);
+	int X = MonitorInfo.rcMonitor.right - Size - Margin;
+	int Y = MonitorInfo.rcMonitor.top + Margin;
+
+	BOOL Recording = gRecording != FALSE;
+
+	// re-assert topmost each time, some fullscreen games push themselves to the top
+	SetWindowPos(gIndicator, HWND_TOPMOST, X, Y, Size, Size, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+
+	if (!gIndicatorShown || gIndicatorRecording != Recording || gIndicatorSize != Size || gIndicatorX != X || gIndicatorY != Y)
+	{
+		Indicator__Paint(Size, X, Y, Recording);
+		gIndicatorShown = TRUE;
+		gIndicatorRecording = Recording;
+		gIndicatorSize = Size;
+		gIndicatorX = X;
+		gIndicatorY = Y;
+	}
+}
+
+static void Indicator_Create(void)
+{
+	WNDCLASSEXW Class;
+	ZeroMemory(&Class, sizeof(Class));
+	Class.cbSize = sizeof(Class);
+	Class.lpfnWndProc = Indicator__WindowProc;
+	Class.hInstance = GetModuleHandleW(NULL);
+	Class.lpszClassName = WCAP_INDICATOR_CLASS;
+	RegisterClassExW(&Class);
+
+	gIndicator = CreateWindowExW(
+		WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+		WCAP_INDICATOR_CLASS, L"", WS_POPUP,
+		0, 0, 1, 1, NULL, NULL, Class.hInstance, NULL);
+	if (gIndicator == NULL)
+	{
+		return;
+	}
+
+	// keep the dot out of the captured frames, fallback for builds before 2004
+	if (!SetWindowDisplayAffinity(gIndicator, WDA_EXCLUDEFROMCAPTURE))
+	{
+		SetWindowDisplayAffinity(gIndicator, WDA_MONITOR);
+	}
+
+	Indicator_Update();
 }
 
 static BOOL Filename__Invalid(WCHAR Character)
@@ -630,6 +893,7 @@ static void StartRecording(ID3D11Device* Device, HWND Window)
 	gRecordingState = SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED);
 	gRecording = TRUE;
 
+	Indicator_Update();
 	Sound_Play(TRUE);
 
 	ID3D11Device_Release(Device);
@@ -708,6 +972,7 @@ static void StopRecording(void)
 
 	UpdateTrayIcon(gIcon1);
 	UpdateTrayTitle(WCAP_TITLE);
+	Indicator_Update();
 
 	if (WasRecording)
 	{
@@ -1325,6 +1590,12 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
 	}
 	else if (Message == WM_TIMER)
 	{
+		if (WParam == WCAP_INDICATOR_TIMER)
+		{
+			Indicator_Update();
+			return 0;
+		}
+
 		if (gRecording)
 		{
 			if (WParam == WCAP_AUDIO_CAPTURE_TIMER)
@@ -1340,6 +1611,12 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
 				return 0;
 			}
 		}
+	}
+	else if (Message == WM_DISPLAYCHANGE)
+	{
+		// resolution or monitor layout changed, re-place the status indicator
+		gIndicatorMonitor = NULL;
+		Indicator_Update();
 	}
 	else if (Message == WM_POWERBROADCAST)
 	{
@@ -1397,6 +1674,7 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
 					Config_Save(&gConfig, gConfigPath);
 					DisableHotKeys();
 					EnableHotKeys();
+					Indicator_Update();
 				}
 			}
 
@@ -1411,6 +1689,7 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
 					Config_Save(&gConfig, gConfigPath);
 					DisableHotKeys();
 					EnableHotKeys();
+					Indicator_Update();
 				}
 			}
 		}
@@ -1836,6 +2115,9 @@ void WinMainCRTStartup()
 	{
 		ExitProcess(0);
 	}
+
+	Indicator_Create();
+	SetTimer(gWindow, WCAP_INDICATOR_TIMER, WCAP_INDICATOR_INTERVAL, NULL);
 	if (!EnableHotKeys())
 	{
 		MessageBoxW(NULL,

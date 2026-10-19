@@ -24,6 +24,7 @@ typedef struct
 	BOOL MouseCursor;
 	BOOL OnlyClientArea;
 	BOOL ShowRecordingBorder;
+	BOOL ShowIndicator;
 	BOOL KeepRoundedWindowCorners;
 	BOOL IncludeSecondaryWindows;
 	BOOL HardwareEncoder;
@@ -94,6 +95,7 @@ static BOOL Config_ShowDialog(Config* C);
 #define ID_MOUSE_CURSOR              20
 #define ID_ONLY_CLIENT_AREA          30
 #define ID_SHOW_RECORDING_BORDER     40
+#define ID_SHOW_INDICATOR            45
 #define ID_ROUNDED_CORNERS           50
 #define ID_INCLUDE_SECONDARY_WINDOWS 55
 #define ID_GPU_ENCODER               60
@@ -335,6 +337,7 @@ static void Config__SetDialogValues(HWND Window, Config* C)
 	CheckDlgButton(Window, ID_MOUSE_CURSOR,              C->MouseCursor);
 	CheckDlgButton(Window, ID_ONLY_CLIENT_AREA,          C->OnlyClientArea);
 	CheckDlgButton(Window, ID_SHOW_RECORDING_BORDER,     C->ShowRecordingBorder);
+	CheckDlgButton(Window, ID_SHOW_INDICATOR,            C->ShowIndicator);
 	CheckDlgButton(Window, ID_ROUNDED_CORNERS,           C->KeepRoundedWindowCorners);
 	CheckDlgButton(Window, ID_INCLUDE_SECONDARY_WINDOWS, C->IncludeSecondaryWindows);
 	CheckDlgButton(Window, ID_GPU_ENCODER,               C->HardwareEncoder);
@@ -511,6 +514,7 @@ static LRESULT CALLBACK Config__DialogProc(HWND Window, UINT Message, WPARAM WPa
 			C->MouseCursor              = IsDlgButtonChecked(Window, ID_MOUSE_CURSOR);
 			C->OnlyClientArea           = IsDlgButtonChecked(Window, ID_ONLY_CLIENT_AREA);
 			C->ShowRecordingBorder      = IsDlgButtonChecked(Window, ID_SHOW_RECORDING_BORDER);
+			C->ShowIndicator            = IsDlgButtonChecked(Window, ID_SHOW_INDICATOR);
 			C->KeepRoundedWindowCorners = IsDlgButtonChecked(Window, ID_ROUNDED_CORNERS);
 			C->IncludeSecondaryWindows  = IsDlgButtonChecked(Window, ID_INCLUDE_SECONDARY_WINDOWS);
 			C->HardwareEncoder          = IsDlgButtonChecked(Window, ID_GPU_ENCODER);
@@ -882,6 +886,7 @@ void Config_Defaults(Config* C)
 		.MouseCursor = TRUE,
 		.OnlyClientArea = TRUE,
 		.ShowRecordingBorder = TRUE,
+		.ShowIndicator = TRUE,
 		.KeepRoundedWindowCorners = TRUE,
 		.IncludeSecondaryWindows = FALSE,
 		.HardwareEncoder = TRUE,
@@ -995,6 +1000,7 @@ void Config_Load(Config* C, LPCWSTR FileName)
 	Config__GetBool(FileName, L"MouseCursor",              &C->MouseCursor);
 	Config__GetBool(FileName, L"OnlyClientArea",           &C->OnlyClientArea);
 	Config__GetBool(FileName, L"ShowRecordingBorder",      &C->ShowRecordingBorder);
+	Config__GetBool(FileName, L"ShowIndicator",            &C->ShowIndicator);
 	Config__GetBool(FileName, L"KeepRoundedWindowCorners", &C->KeepRoundedWindowCorners);
 	Config__GetBool(FileName, L"IncludeSecondaryWindows",  &C->IncludeSecondaryWindows);
 	Config__GetBool(FileName, L"HardwareEncoder",          &C->HardwareEncoder);
@@ -1052,6 +1058,7 @@ void Config_Save(Config* C, LPCWSTR FileName)
 	WritePrivateProfileStringW(INI_SECTION, L"MouseCursor",              C->MouseCursor              ? L"1" : L"0", FileName);
 	WritePrivateProfileStringW(INI_SECTION, L"OnlyClientArea",           C->OnlyClientArea           ? L"1" : L"0", FileName);
 	WritePrivateProfileStringW(INI_SECTION, L"ShowRecordingBorder",      C->ShowRecordingBorder      ? L"1" : L"0", FileName);
+	WritePrivateProfileStringW(INI_SECTION, L"ShowIndicator",            C->ShowIndicator            ? L"1" : L"0", FileName);
 	WritePrivateProfileStringW(INI_SECTION, L"KeepRoundedWindowCorners", C->KeepRoundedWindowCorners ? L"1" : L"0", FileName);
 	WritePrivateProfileStringW(INI_SECTION, L"IncludeSecondaryWindows",  C->IncludeSecondaryWindows  ? L"1" : L"0", FileName);
 	WritePrivateProfileStringW(INI_SECTION, L"HardwareEncoder",          C->HardwareEncoder          ? L"1" : L"0", FileName);
@@ -1115,6 +1122,7 @@ BOOL Config_ShowDialog(Config* C)
 					{ "显示录制边框",   ID_SHOW_RECORDING_BORDER,     ITEM_CHECKBOX                     },
 					{ "保留圆角",       ID_ROUNDED_CORNERS,           ITEM_CHECKBOX                     },
 					{ "包含次级窗口",   ID_INCLUDE_SECONDARY_WINDOWS, ITEM_CHECKBOX                     },
+					{ "显示状态指示器", ID_SHOW_INDICATOR,            ITEM_CHECKBOX                     },
 					{ "GPU 编码器",     ID_GPU_ENCODER,               ITEM_CHECKBOX | ITEM_COMBOBOX, 50 },
 					{ NULL },
 				},
