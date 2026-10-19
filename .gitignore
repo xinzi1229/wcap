@@ -5,4 +5,7 @@
 *.lib
 *.exp
 shaders
+.workbuddy/
+.gh-token
+.upload.py
 

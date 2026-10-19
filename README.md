@@ -7,6 +7,22 @@ Get latest binary here: [wcap-x64.exe][] or [wcap-arm64.exe][]
 
 **WARNING**: Windows Defender or other AV software might report false positive detection
 
+中文说明（本分支改动）
+======================
+
+界面已全部汉化（托盘菜单、设置对话框、录制区域提示、通知气泡）。在原有功能上新增：
+
+ * **全局快捷键（可在设置里修改）**
+   * `Ctrl + Alt + R` 开始/停止录制（默认录制鼠标所在显示器）
+   * `Ctrl + Alt + S` 仅停止录制
+   * `Ctrl + PrintScreen` 录制显示器、`Ctrl + Win + PrintScreen` 录制窗口、`Ctrl + Shift + PrintScreen` 录制区域（原有）
+ * **自定义文件名**：设置里“文件名格式”支持占位符，默认 `wcap-{date}-{seq}`，输出如 `wcap-2026-10-19-01.mp4`
+   * `{date}` → 2026-10-19，`{time}` → 14-32-05，`{datetime}` → 2026-10-19_14-32-05
+   * `{yyyy}` `{yy}` `{MM}` `{dd}` `{HH}` `{mm}` `{ss}` 单独的年月日时分秒
+   * `{seq}`（或 `{index}`、`{n}`）→ 两位递增序号，自动跳过当天已存在的文件；模板里不写 `{seq}` 时，若同名文件已存在会自动追加 `-01`
+   * 文件名中的非法字符会自动替换为 `-`
+ * **开始/停止提示音**：开始录制播放上行双音（880→1320 Hz），停止录制播放下行双音（1320→660 Hz），异步播放、不阻塞录制；可在设置里关闭“录制提示音”
+
 Features
 ========
 

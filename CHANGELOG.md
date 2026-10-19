@@ -1,6 +1,13 @@
 Changelog
 =========
 
+##### 2026.10.19
+ * 增加“开始/停止录制”“仅停止录制”两个全局快捷键（默认 Ctrl+Alt+R / Ctrl+Alt+S）
+ * 增加自定义输出文件名模板，支持 {date} {time} {datetime} {seq} 等占位符，默认 wcap-{date}-{seq}
+ * 开始录制与停止录制使用不同的提示音（上行/下行双音），可在设置中关闭
+ * 界面汉化：托盘菜单、设置对话框、区域选择提示、通知气泡
+ * build.cmd 增加 /utf-8 编译选项，并在 VS 工作负载探测失败时回退到最新安装
+
 ##### 2025.11.23
  * option to capture secondary windows (popups & dialogs) on Windows 11 24H2 and up
 

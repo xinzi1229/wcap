@@ -30,6 +30,8 @@ typedef struct
 	BOOL HardwarePreferIntegrated;
 	// output
 	WCHAR OutputFolder[MAX_PATH];
+	WCHAR FilenameTemplate[128];
+	BOOL PlaySounds;
 	BOOL OpenFolder;
 	BOOL FragmentedOutput;
 	BOOL EnableLimitLength;
@@ -56,6 +58,8 @@ typedef struct
 	DWORD ShortcutMonitor;
 	DWORD ShortcutWindow;
 	DWORD ShortcutRegion;
+	DWORD ShortcutToggle;
+	DWORD ShortcutStop;
 }
 Config;
 
@@ -99,6 +103,8 @@ static BOOL Config_ShowDialog(Config* C);
 #define ID_FRAGMENTED_MP4          120
 #define ID_LIMIT_LENGTH            130
 #define ID_LIMIT_SIZE              140
+#define ID_FILENAME_TEMPLATE       115
+#define ID_PLAY_SOUNDS             125
 
 #define ID_VIDEO_GAMMA_RESIZE      200
 #define ID_VIDEO_IMPROVED_CONVERT  210
@@ -119,6 +125,8 @@ static BOOL Config_ShowDialog(Config* C);
 #define ID_SHORTCUT_MONITOR        400
 #define ID_SHORTCUT_WINDOW         410
 #define ID_SHORTCUT_REGION         420
+#define ID_SHORTCUT_TOGGLE         390
+#define ID_SHORTCUT_STOP           395
 
 // control types
 #define ITEM_CHECKBOX (1<<0)
@@ -127,6 +135,7 @@ static BOOL Config_ShowDialog(Config* C);
 #define ITEM_FOLDER   (1<<3)
 #define ITEM_BUTTON   (1<<4)
 #define ITEM_HOTKEY   (1<<5)
+#define ITEM_TEXT     (1<<6)
 
 // win32 control styles
 #define CONTROL_BUTTON    0x0080
@@ -141,9 +150,9 @@ static BOOL Config_ShowDialog(Config* C);
 #define COL01W 154
 #define COL10W 144
 #define COL11W 130
-#define ROW0H 98
-#define ROW1H 124
-#define ROW2H 56
+#define ROW0H 120
+#define ROW1H 126
+#define ROW2H 84
 
 #define PADDING 4             // padding for dialog and group boxes
 #define BUTTON_WIDTH 50       // normal button width
@@ -256,7 +265,7 @@ static void Config__UpdateAudioBitrate(HWND Window, DWORD Codec, DWORD AudioBitr
 	}
 	else if (Codec == CONFIG_AUDIO_FLAC)
 	{
-		ComboBox_AddString(Control, L"auto");
+		ComboBox_AddString(Control, L"自动");
 		ComboBox_SetCurSel(Control, 0);
 	}
 }
@@ -265,7 +274,7 @@ static void Config__FormatKey(DWORD KeyMod, WCHAR* Text)
 {
 	if (KeyMod == 0)
 	{
-		StrCpyW(Text, L"[none]");
+		StrCpyW(Text, L"[无]");
 		return;
 	}
 
@@ -333,6 +342,8 @@ static void Config__SetDialogValues(HWND Window, Config* C)
 
 	// output
 	SetDlgItemTextW(Window, ID_OUTPUT_FOLDER,  C->OutputFolder);
+	SetDlgItemTextW(Window, ID_FILENAME_TEMPLATE, C->FilenameTemplate);
+	CheckDlgButton(Window, ID_PLAY_SOUNDS,     C->PlaySounds);
 	CheckDlgButton(Window, ID_OPEN_FOLDER,     C->OpenFolder);
 	CheckDlgButton(Window, ID_FRAGMENTED_MP4,  C->FragmentedOutput);
 	CheckDlgButton(Window, ID_LIMIT_LENGTH,    C->EnableLimitLength);
@@ -370,6 +381,12 @@ static void Config__SetDialogValues(HWND Window, Config* C)
 	}
 
 	// shortcuts
+	Config__FormatKey(C->ShortcutToggle, Text);
+	SetDlgItemTextW(Window, ID_SHORTCUT_TOGGLE, Text);
+	SetWindowLongW(GetDlgItem(Window, ID_SHORTCUT_TOGGLE), GWLP_USERDATA, C->ShortcutToggle);
+	Config__FormatKey(C->ShortcutStop, Text);
+	SetDlgItemTextW(Window, ID_SHORTCUT_STOP, Text);
+	SetWindowLongW(GetDlgItem(Window, ID_SHORTCUT_STOP), GWLP_USERDATA, C->ShortcutStop);
 	Config__FormatKey(C->ShortcutMonitor, Text);
 	SetDlgItemTextW(Window, ID_SHORTCUT_MONITOR, Text);
 	SetWindowLongW(GetDlgItem(Window, ID_SHORTCUT_MONITOR), GWLP_USERDATA, C->ShortcutMonitor);
@@ -470,8 +487,8 @@ static LRESULT CALLBACK Config__DialogProc(HWND Window, UINT Message, WPARAM WPa
 		SendDlgItemMessageW(Window, ID_AUDIO_SAMPLERATE, CB_ADDSTRING, 0, (LPARAM)L"44100");
 		SendDlgItemMessageW(Window, ID_AUDIO_SAMPLERATE, CB_ADDSTRING, 0, (LPARAM)L"48000");
 
-		SendDlgItemMessageW(Window, ID_GPU_ENCODER + 1, CB_ADDSTRING, 0, (LPARAM)L"Prefer iGPU");
-		SendDlgItemMessageW(Window, ID_GPU_ENCODER + 1, CB_ADDSTRING, 0, (LPARAM)L"Prefer dGPU");
+		SendDlgItemMessageW(Window, ID_GPU_ENCODER + 1, CB_ADDSTRING, 0, (LPARAM)L"优先核显");
+		SendDlgItemMessageW(Window, ID_GPU_ENCODER + 1, CB_ADDSTRING, 0, (LPARAM)L"优先独显");
 
 		Config__SetDialogValues(Window, C);
 
@@ -501,6 +518,8 @@ static LRESULT CALLBACK Config__DialogProc(HWND Window, UINT Message, WPARAM WPa
 
 			// output
 			GetDlgItemTextW(Window, ID_OUTPUT_FOLDER, C->OutputFolder, _countof(C->OutputFolder));
+			GetDlgItemTextW(Window, ID_FILENAME_TEMPLATE, C->FilenameTemplate, _countof(C->FilenameTemplate));
+			C->PlaySounds        = IsDlgButtonChecked(Window, ID_PLAY_SOUNDS);
 			C->OpenFolder        = IsDlgButtonChecked(Window, ID_OPEN_FOLDER);
 			C->FragmentedOutput  = IsDlgButtonChecked(Window, ID_FRAGMENTED_MP4);
 			C->EnableLimitLength = IsDlgButtonChecked(Window, ID_LIMIT_LENGTH);
@@ -527,6 +546,8 @@ static LRESULT CALLBACK Config__DialogProc(HWND Window, UINT Message, WPARAM WPa
 				C->AudioBitrate = gAudioBitrates[SendDlgItemMessageW(Window, ID_AUDIO_BITRATE, CB_GETCURSEL, 0, 0)];
 			}
 			// shortcuts
+			C->ShortcutToggle  = GetWindowLongW(GetDlgItem(Window, ID_SHORTCUT_TOGGLE),  GWLP_USERDATA);
+			C->ShortcutStop    = GetWindowLongW(GetDlgItem(Window, ID_SHORTCUT_STOP),    GWLP_USERDATA);
 			C->ShortcutMonitor = GetWindowLongW(GetDlgItem(Window, ID_SHORTCUT_MONITOR), GWLP_USERDATA);
 			C->ShortcutWindow  = GetWindowLongW(GetDlgItem(Window, ID_SHORTCUT_WINDOW),  GWLP_USERDATA);
 			C->ShortcutRegion  = GetWindowLongW(GetDlgItem(Window, ID_SHORTCUT_REGION),  GWLP_USERDATA);
@@ -610,13 +631,15 @@ static LRESULT CALLBACK Config__DialogProc(HWND Window, UINT Message, WPARAM WPa
 
 			return TRUE;
 		}
-		else if ((Control == ID_SHORTCUT_MONITOR ||
+		else if ((Control == ID_SHORTCUT_TOGGLE ||
+		          Control == ID_SHORTCUT_STOP ||
+		          Control == ID_SHORTCUT_MONITOR ||
 		          Control == ID_SHORTCUT_WINDOW ||
 		          Control == ID_SHORTCUT_REGION) && HIWORD(WParam) == BN_CLICKED)
 		{
 			if (gConfigShortcut.Control == 0)
 			{
-				SetDlgItemTextW(Window, Control, L"Press new shortcut, [ESC] to cancel, [BACKSPACE] to disable");
+				SetDlgItemTextW(Window, Control, L"请按下新的快捷键，ESC 取消，退格键禁用");
 
 				gConfigShortcut.Control = Control;
 				gConfigShortcut.Config = C;
@@ -738,15 +761,15 @@ static void Config__DoDialogLayout(const Config__DialogLayout* Layout, BYTE* Dat
 	int ButtonY = PADDING + ROW0H + ROW1H + ROW2H + PADDING;
 
 	DLGITEMTEMPLATE* OkData = Config__Align(Data, sizeof(DWORD));
-	Data = Config__DoDialogItem(Data, "OK", ID_OK, CONTROL_BUTTON, WS_TABSTOP | BS_DEFPUSHBUTTON, ButtonX, ButtonY, BUTTON_WIDTH, ITEM_HEIGHT);
+	Data = Config__DoDialogItem(Data, "确定", ID_OK, CONTROL_BUTTON, WS_TABSTOP | BS_DEFPUSHBUTTON, ButtonX, ButtonY, BUTTON_WIDTH, ITEM_HEIGHT);
 	ButtonX += BUTTON_WIDTH + PADDING;
 
 	DLGITEMTEMPLATE* CancelData = Config__Align(Data, sizeof(DWORD));
-	Data = Config__DoDialogItem(Data, "Cancel", ID_CANCEL, CONTROL_BUTTON, WS_TABSTOP | BS_PUSHBUTTON, ButtonX, ButtonY, BUTTON_WIDTH, ITEM_HEIGHT);
+	Data = Config__DoDialogItem(Data, "取消", ID_CANCEL, CONTROL_BUTTON, WS_TABSTOP | BS_PUSHBUTTON, ButtonX, ButtonY, BUTTON_WIDTH, ITEM_HEIGHT);
 	ButtonX += BUTTON_WIDTH + PADDING;
 
 	DLGITEMTEMPLATE* DefaultsData = Config__Align(Data, sizeof(DWORD));
-	Data = Config__DoDialogItem(Data, "Defaults", ID_DEFAULTS, CONTROL_BUTTON, WS_TABSTOP | BS_PUSHBUTTON, ButtonX, ButtonY, BUTTON_WIDTH, ITEM_HEIGHT);
+	Data = Config__DoDialogItem(Data, "恢复默认", ID_DEFAULTS, CONTROL_BUTTON, WS_TABSTOP | BS_PUSHBUTTON, ButtonX, ButtonY, BUTTON_WIDTH, ITEM_HEIGHT);
 	ButtonX += BUTTON_WIDTH + PADDING;
 
 	for (const Config__DialogGroup* Group = Layout->Groups; Group->Caption; Group++)
@@ -770,6 +793,7 @@ static void Config__DoDialogLayout(const Config__DialogLayout* Layout, BYTE* Dat
 			int HasCombobox  = !!(Item->Item & ITEM_COMBOBOX);
 			int OnlyCheckbox = !(Item->Item & ~ITEM_CHECKBOX);
 			int HasHotKey    = !!(Item->Item & ITEM_HOTKEY);
+			int HasText      = !!(Item->Item & ITEM_TEXT);
 
 			int ItemX = X;
 			int ItemW = W;
@@ -792,7 +816,7 @@ static void Config__DoDialogLayout(const Config__DialogLayout* Layout, BYTE* Dat
 				}
 			}
 
-			if ((HasCombobox && !HasCheckbox) || (HasNumber || HasHotKey) && !HasCheckbox)
+			if ((HasCombobox && !HasCheckbox) || (HasNumber || HasHotKey || HasText) && !HasCheckbox)
 			{
 				// label, only for controls without checkbox, or combobox
 				Data = Config__DoDialogItem(Data, Item->Text, -1, CONTROL_STATIC, 0, ItemX, Y, Item->Width, ITEM_HEIGHT);
@@ -810,6 +834,12 @@ static void Config__DoDialogLayout(const Config__DialogLayout* Layout, BYTE* Dat
 			if (HasHotKey)
 			{
 				Data = Config__DoDialogItem(Data, "", ItemId, CONTROL_BUTTON, WS_TABSTOP, ItemX, Y, ItemW, ITEM_HEIGHT);
+				ItemCount++;
+			}
+
+			if (HasText)
+			{
+				Data = Config__DoDialogItem(Data, "", ItemId, CONTROL_EDIT, WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL, ItemX, Y, ItemW, ITEM_HEIGHT);
 				ItemCount++;
 			}
 
@@ -857,6 +887,7 @@ void Config_Defaults(Config* C)
 		.HardwareEncoder = TRUE,
 		.HardwarePreferIntegrated = FALSE,
 		// output
+		.PlaySounds = TRUE,
 		.OpenFolder = TRUE,
 		.FragmentedOutput = FALSE,
 		.EnableLimitLength = FALSE,
@@ -883,7 +914,11 @@ void Config_Defaults(Config* C)
 		.ShortcutMonitor = HOT_KEY(VK_SNAPSHOT, MOD_CONTROL),
 		.ShortcutWindow = HOT_KEY(VK_SNAPSHOT, MOD_CONTROL | MOD_WIN),
 		.ShortcutRegion = HOT_KEY(VK_SNAPSHOT, MOD_CONTROL | MOD_SHIFT),
+		.ShortcutToggle = HOT_KEY(L'R', MOD_CONTROL | MOD_ALT),
+		.ShortcutStop   = HOT_KEY(L'S', MOD_CONTROL | MOD_ALT),
 	};
+
+	StrCpyW(C->FilenameTemplate, WCAP_DEFAULT_FILENAME_TEMPLATE);
 
 	LPWSTR VideoFolder;
 	HR(SHGetKnownFolderPath(&FOLDERID_Videos, KF_FLAG_DEFAULT, NULL, &VideoFolder));
@@ -968,6 +1003,10 @@ void Config_Load(Config* C, LPCWSTR FileName)
 	WCHAR OutputFolder[MAX_PATH];
 	GetPrivateProfileStringW(INI_SECTION, L"OutputFolder", L"", OutputFolder, _countof(OutputFolder), FileName);
 	if (OutputFolder[0]) StrCpyW(C->OutputFolder, OutputFolder);
+	WCHAR FilenameTemplate[128];
+	GetPrivateProfileStringW(INI_SECTION, L"FilenameTemplate", L"", FilenameTemplate, _countof(FilenameTemplate), FileName);
+	if (FilenameTemplate[0]) StrCpyNW(C->FilenameTemplate, FilenameTemplate, _countof(C->FilenameTemplate));
+	Config__GetBool(FileName, L"PlaySounds",       &C->PlaySounds);
 	Config__GetBool(FileName, L"OpenFolder",        &C->OpenFolder);
 	Config__GetBool(FileName, L"FragmentedOutput",  &C->FragmentedOutput);
 	Config__GetBool(FileName, L"EnableLimitLength", &C->EnableLimitLength);
@@ -994,6 +1033,8 @@ void Config_Load(Config* C, LPCWSTR FileName)
 	Config__GetInt(FileName, L"ShortcutMonitor", &C->ShortcutMonitor, NULL);
 	Config__GetInt(FileName, L"ShortcutWindow",  &C->ShortcutWindow,  NULL);
 	Config__GetInt(FileName, L"ShortcutRect",    &C->ShortcutRegion,  NULL);
+	Config__GetInt(FileName, L"ShortcutToggle",  &C->ShortcutToggle,  NULL);
+	Config__GetInt(FileName, L"ShortcutStop",    &C->ShortcutStop,    NULL);
 
 	Config__ValidateVideoProfile(C);
 }
@@ -1017,6 +1058,8 @@ void Config_Save(Config* C, LPCWSTR FileName)
 	WritePrivateProfileStringW(INI_SECTION, L"HardwarePreferIntegrated", C->HardwarePreferIntegrated ? L"1" : L"0", FileName);
 	// output
 	WritePrivateProfileStringW(INI_SECTION, L"OutputFolder",      C->OutputFolder, FileName);
+	WritePrivateProfileStringW(INI_SECTION, L"FilenameTemplate",  C->FilenameTemplate, FileName);
+	WritePrivateProfileStringW(INI_SECTION, L"PlaySounds",        C->PlaySounds        ? L"1" : L"0", FileName);
 	WritePrivateProfileStringW(INI_SECTION, L"OpenFolder",        C->OpenFolder        ? L"1" : L"0", FileName);
 	WritePrivateProfileStringW(INI_SECTION, L"FragmentedOutput",  C->FragmentedOutput  ? L"1" : L"0", FileName);
 	WritePrivateProfileStringW(INI_SECTION, L"EnableLimitLength", C->EnableLimitLength ? L"1" : L"0", FileName);
@@ -1043,6 +1086,8 @@ void Config_Save(Config* C, LPCWSTR FileName)
 	Config__WriteInt(FileName, L"ShortcutMonitor", C->ShortcutMonitor);
 	Config__WriteInt(FileName, L"ShortcutWindow",  C->ShortcutWindow);
 	Config__WriteInt(FileName, L"ShortcutRect",    C->ShortcutRegion);
+	Config__WriteInt(FileName, L"ShortcutToggle",  C->ShortcutToggle);
+	Config__WriteInt(FileName, L"ShortcutStop",    C->ShortcutStop);
 }
 
 BOOL Config_ShowDialog(Config* C)
@@ -1056,75 +1101,79 @@ BOOL Config_ShowDialog(Config* C)
 	Config__DialogLayout Dialog = (Config__DialogLayout)
 	{
 		.Title = WCAP_CONFIG_TITLE,
-		.Font = "Segoe UI",
+		.Font = "Microsoft YaHei UI",
 		.FontSize = 9,
 		.Groups = (Config__DialogGroup[])
 		{
 			{
-				.Caption = "Capture",
+				.Caption = "录制",
 				.Rect = { 0, 0, COL00W, ROW0H },
 				.Items = (Config__DialogItem[])
 				{
-					{ "&Mouse Cursor",                ID_MOUSE_CURSOR,              ITEM_CHECKBOX                     },
-					{ "Only &Client Area",            ID_ONLY_CLIENT_AREA,          ITEM_CHECKBOX                     },
-					{ "Show Recording &Border",       ID_SHOW_RECORDING_BORDER,     ITEM_CHECKBOX                     },
-					{ "Keep &Rounded Window Corners", ID_ROUNDED_CORNERS,           ITEM_CHECKBOX                     },
-					{ "Include Secondar&y Windows",   ID_INCLUDE_SECONDARY_WINDOWS, ITEM_CHECKBOX                     },
-					{ "GPU &Encoder",                 ID_GPU_ENCODER,               ITEM_CHECKBOX | ITEM_COMBOBOX, 50 },
+					{ "鼠标光标",       ID_MOUSE_CURSOR,              ITEM_CHECKBOX                     },
+					{ "仅客户区",       ID_ONLY_CLIENT_AREA,          ITEM_CHECKBOX                     },
+					{ "显示录制边框",   ID_SHOW_RECORDING_BORDER,     ITEM_CHECKBOX                     },
+					{ "保留圆角",       ID_ROUNDED_CORNERS,           ITEM_CHECKBOX                     },
+					{ "包含次级窗口",   ID_INCLUDE_SECONDARY_WINDOWS, ITEM_CHECKBOX                     },
+					{ "GPU 编码器",     ID_GPU_ENCODER,               ITEM_CHECKBOX | ITEM_COMBOBOX, 50 },
 					{ NULL },
 				},
 			},
 			{
-				.Caption = "&Output",
+				.Caption = "输出",
 				.Rect = { COL00W + PADDING, 0, COL01W, ROW0H },
 				.Items = (Config__DialogItem[])
 				{
-					{ "",                            ID_OUTPUT_FOLDER,  ITEM_FOLDER                     },
-					{ "O&pen When Finished",         ID_OPEN_FOLDER,    ITEM_CHECKBOX                   },
-					{ "Fragmented MP&4 (H264 only)", ID_FRAGMENTED_MP4, ITEM_CHECKBOX                   },
-					{ "Limit &Length (seconds)",     ID_LIMIT_LENGTH,   ITEM_CHECKBOX | ITEM_NUMBER, 80 },
-					{ "Limit &Size (MB)",            ID_LIMIT_SIZE,     ITEM_CHECKBOX | ITEM_NUMBER, 80 },
+					{ "",                    ID_OUTPUT_FOLDER,    ITEM_FOLDER                },
+					{ "文件名格式",          ID_FILENAME_TEMPLATE, ITEM_TEXT, 64             },
+					{ "完成后打开文件夹",    ID_OPEN_FOLDER,      ITEM_CHECKBOX              },
+					{ "分片 MP4 (仅 H264)",  ID_FRAGMENTED_MP4,   ITEM_CHECKBOX              },
+					{ "限制时长 (秒)",       ID_LIMIT_LENGTH,     ITEM_CHECKBOX | ITEM_NUMBER, 80 },
+					{ "限制大小 (MB)",       ID_LIMIT_SIZE,       ITEM_CHECKBOX | ITEM_NUMBER, 80 },
+					{ "录制提示音",          ID_PLAY_SOUNDS,      ITEM_CHECKBOX              },
 					{ NULL },
 				},
 			},
 			{
-				.Caption = "&Video",
+				.Caption = "视频",
 				.Rect = { 0, ROW0H, COL10W, ROW1H },
 				.Items = (Config__DialogItem[])
 				{
-					{ "&Gamma Correct Resize",      ID_VIDEO_GAMMA_RESIZE ,    ITEM_CHECKBOX     },
-					{ "&Improved Color Conversion", ID_VIDEO_IMPROVED_CONVERT, ITEM_CHECKBOX     },
-					{ "Codec",                      ID_VIDEO_CODEC,            ITEM_COMBOBOX, 64 },
-					{ "Profile",                    ID_VIDEO_PROFILE,          ITEM_COMBOBOX, 64 },
-					{ "Max &Width",                 ID_VIDEO_MAX_WIDTH,        ITEM_NUMBER,   64 },
-					{ "Max &Height",                ID_VIDEO_MAX_HEIGHT,       ITEM_NUMBER,   64 },
-					{ "Max &Framerate",             ID_VIDEO_MAX_FRAMERATE,    ITEM_NUMBER,   64 },
-					{ "Bitrate (kbit/s)",           ID_VIDEO_BITRATE,          ITEM_NUMBER,   64 },
+					{ "Gamma 校正缩放", ID_VIDEO_GAMMA_RESIZE ,    ITEM_CHECKBOX     },
+					{ "改进色彩转换",   ID_VIDEO_IMPROVED_CONVERT, ITEM_CHECKBOX     },
+					{ "编码器",         ID_VIDEO_CODEC,            ITEM_COMBOBOX, 64 },
+					{ "配置档",         ID_VIDEO_PROFILE,          ITEM_COMBOBOX, 64 },
+					{ "最大宽度",       ID_VIDEO_MAX_WIDTH,        ITEM_NUMBER,   64 },
+					{ "最大高度",       ID_VIDEO_MAX_HEIGHT,       ITEM_NUMBER,   64 },
+					{ "最大帧率",       ID_VIDEO_MAX_FRAMERATE,    ITEM_NUMBER,   64 },
+					{ "码率 (kbit/s)",  ID_VIDEO_BITRATE,          ITEM_NUMBER,   64 },
 					{ NULL },
 				},
 			},
 			{
-				.Caption = "&Audio",
+				.Caption = "音频",
 				.Rect = { COL10W + PADDING, ROW0H, COL11W, ROW1H },
 				.Items = (Config__DialogItem[])
 				{
-					{ "Capture Au&dio",           ID_AUDIO_CAPTURE,           ITEM_CHECKBOX     },
-					{ "Applicatio&n Local Audio", ID_AUDIO_APPLICATION_LOCAL, ITEM_CHECKBOX     },
-					{ "Codec",                    ID_AUDIO_CODEC,             ITEM_COMBOBOX, 60 },
-					{ "Channels",                 ID_AUDIO_CHANNELS,          ITEM_COMBOBOX, 60 },
-					{ "Samplerate",               ID_AUDIO_SAMPLERATE,        ITEM_COMBOBOX, 60 },
-					{ "Bitrate (kbit/s)",         ID_AUDIO_BITRATE,           ITEM_COMBOBOX, 60 },
+					{ "捕获音频",       ID_AUDIO_CAPTURE,           ITEM_CHECKBOX     },
+					{ "仅应用内音频",   ID_AUDIO_APPLICATION_LOCAL, ITEM_CHECKBOX     },
+					{ "编码器",         ID_AUDIO_CODEC,             ITEM_COMBOBOX, 60 },
+					{ "声道",           ID_AUDIO_CHANNELS,          ITEM_COMBOBOX, 60 },
+					{ "采样率",         ID_AUDIO_SAMPLERATE,        ITEM_COMBOBOX, 60 },
+					{ "码率 (kbit/s)",  ID_AUDIO_BITRATE,           ITEM_COMBOBOX, 60 },
 					{ NULL },
 				},
 			},
 			{
-				.Caption = "Shor&tcuts",
+				.Caption = "快捷键",
 				.Rect = { 0, ROW0H + ROW1H, COL00W + PADDING + COL01W, ROW2H },
 				.Items = (Config__DialogItem[])
 				{
-					{ "Capture Monitor", ID_SHORTCUT_MONITOR, ITEM_HOTKEY, 64 },
-					{ "Capture Window",  ID_SHORTCUT_WINDOW,  ITEM_HOTKEY, 64 },
-					{ "Capture Region",  ID_SHORTCUT_REGION,  ITEM_HOTKEY, 64 },
+					{ "开始/停止录制", ID_SHORTCUT_TOGGLE,  ITEM_HOTKEY, 64 },
+					{ "仅停止录制",    ID_SHORTCUT_STOP,    ITEM_HOTKEY, 64 },
+					{ "录制显示器",    ID_SHORTCUT_MONITOR, ITEM_HOTKEY, 64 },
+					{ "录制窗口",      ID_SHORTCUT_WINDOW,  ITEM_HOTKEY, 64 },
+					{ "录制区域",      ID_SHORTCUT_REGION,  ITEM_HOTKEY, 64 },
 					{ NULL },
 				},
 			},
@@ -1132,7 +1181,7 @@ BOOL Config_ShowDialog(Config* C)
 		},
 	};
 
-	BYTE __declspec(align(4)) Data[4096];
+	BYTE __declspec(align(4)) Data[8192];
 	Config__DoDialogLayout(&Dialog, Data, sizeof(Data));
 
 	return (BOOL)DialogBoxIndirectParamW(GetModuleHandleW(NULL), (LPCDLGTEMPLATEW)Data, NULL, Config__DialogProc, (LPARAM)C);

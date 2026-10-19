@@ -21,6 +21,8 @@ if "%ARGS:x64=%" neq "!ARGS!" (
 where /Q cl.exe || (
   set __VSCMD_ARG_NO_LOGO=1
   for /f "tokens=*" %%i in ('"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -requires Microsoft.VisualStudio.Workload.NativeDesktop -property installationPath') do set VS=%%i
+  rem workload query can come back empty, fall back to any latest VS installation
+  if "!VS!" equ "" for /f "tokens=*" %%i in ('"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath') do set VS=%%i
   if "!VS!" equ "" (
     echo ERROR: Visual Studio installation not found
     exit /b 1
@@ -29,12 +31,12 @@ where /Q cl.exe || (
 )
 
 if "%ARGS:debug=%" neq "%ARGS%" (
-  set CL=/MTd /Od /Z7 /D_DEBUG /RTC1
+  set CL=/MTd /Od /Z7 /D_DEBUG /RTC1 /utf-8
   set LINK=/DEBUG
   set FXC=/Od /Zi
   if "%TARGET_ARCH%" equ "x64" set CL=!CL! /fsanitize=address
 ) else (
-  set CL=/GL /O1 /Oi /DNDEBUG /GS-
+  set CL=/GL /O1 /Oi /DNDEBUG /GS- /utf-8
   set LINK=/NOCOFFGRPINFO /EMITTOOLVERSIONINFO:NO /LTCG /OPT:REF /OPT:ICF ucrt.lib libvcruntime.lib
   set FXC=/O3 /Qstrip_reflect /Qstrip_debug /Qstrip_priv
 )

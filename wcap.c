@@ -11,6 +11,8 @@
 #include <shlwapi.h>
 #include <shellapi.h>
 #include <windowsx.h>
+#include <mmsystem.h>
+#include <math.h>
 
 #pragma comment (lib, "ntdll")
 #pragma comment (lib, "kernel32")
@@ -34,6 +36,7 @@
 #pragma comment (lib, "wmcodecdspuuid")
 #pragma comment (lib, "avrt")
 #pragma comment (lib, "uxtheme")
+#pragma comment (lib, "winmm")
 #pragma comment (lib, "OneCore")
 #pragma comment (lib, "CoreMessaging")
 
@@ -60,6 +63,9 @@ __declspec(dllexport) DWORD NvOptimusEnablement = 1;
 #define HOT_RECORD_WINDOW  1
 #define HOT_RECORD_MONITOR 2
 #define HOT_RECORD_REGION  3
+#define HOT_RECORD_TOGGLE  4
+#define HOT_RECORD_STOP    5
+#define HOT_COUNT          5
 
 #define WCAP_RESIZE_NONE 0
 #define WCAP_RESIZE_TL   1
@@ -72,10 +78,32 @@ __declspec(dllexport) DWORD NvOptimusEnablement = 1;
 #define WCAP_RESIZE_B    8
 #define WCAP_RESIZE_BR   9
 
-#define WCAP_UI_FONT      L"Segoe UI"
+#define WCAP_UI_FONT      L"Microsoft YaHei UI"
 #define WCAP_UI_FONT_SIZE 16
 
 #define WCAP_RECT_BORDER 2
+
+// file name template support: {date}, {time}, {datetime}, {yyyy}, {yy}, {MM}, {dd}, {HH}, {mm}, {ss}, {seq}
+#define WCAP_SEQ_MARKER                ((WCHAR)1)
+#define WCAP_FILENAME_MAX              192
+#define WCAP_FILENAME_TEMPLATE_MAX     128
+
+// notification sounds (generated at startup, played asynchronously)
+#define WCAP_SOUND_RATE     22050
+#define WCAP_SOUND_MAX_SIZE 16384
+
+typedef struct
+{
+	WORD Freq; // Hz
+	WORD Msec; // duration in milliseconds
+}
+SoundTone;
+
+static const SoundTone gSoundTonesStart[] = { { 880, 70 }, { 1320, 90 } };
+static const SoundTone gSoundTonesStop[]  = { { 1320, 70 }, { 660, 110 } };
+
+static BYTE gSoundStart[WCAP_SOUND_MAX_SIZE];
+static BYTE gSoundStop[WCAP_SOUND_MAX_SIZE];
 
 // constants
 static WCHAR gConfigPath[MAX_PATH];
@@ -196,6 +224,329 @@ static void ShowFileInFolder(LPCWSTR Filename)
 	}
 }
 
+static void Sound__Build(BYTE* Buffer, const SoundTone* Tones, int ToneCount)
+{
+	int TotalSamples = 0;
+	for (int i = 0; i < ToneCount; i++)
+	{
+		TotalSamples += WCAP_SOUND_RATE * Tones[i].Msec / 1000;
+	}
+
+	DWORD DataSize = (DWORD)TotalSamples * 2;
+	if (DataSize + 44u > (DWORD)WCAP_SOUND_MAX_SIZE)
+	{
+		return;
+	}
+
+	CopyMemory(Buffer + 0, "RIFF", 4);
+	*(DWORD*)(Buffer + 4) = 36 + DataSize;
+	CopyMemory(Buffer + 8, "WAVEfmt ", 8);
+	*(DWORD*)(Buffer + 16) = 16;
+	*(WORD*)(Buffer + 20) = 1; // PCM
+	*(WORD*)(Buffer + 22) = 1; // mono
+	*(DWORD*)(Buffer + 24) = WCAP_SOUND_RATE;
+	*(DWORD*)(Buffer + 28) = WCAP_SOUND_RATE * 2;
+	*(WORD*)(Buffer + 32) = 2;  // block align
+	*(WORD*)(Buffer + 34) = 16; // bits per sample
+	CopyMemory(Buffer + 36, "data", 4);
+	*(DWORD*)(Buffer + 40) = DataSize;
+
+	short* Samples = (short*)(Buffer + 44);
+	double Phase = 0.0;
+	const double TwoPi = 6.283185307179586;
+
+	for (int t = 0; t < ToneCount; t++)
+	{
+		int Count = WCAP_SOUND_RATE * Tones[t].Msec / 1000;
+		double Step = TwoPi * Tones[t].Freq / WCAP_SOUND_RATE;
+		int Fade = WCAP_SOUND_RATE / 200; // 5 msec fade to avoid clicks
+
+		for (int i = 0; i < Count; i++)
+		{
+			double Envelope = 1.0;
+			if (i < Fade)
+			{
+				Envelope = (double)i / Fade;
+			}
+			else if (i > Count - Fade)
+			{
+				Envelope = (double)(Count - i) / Fade;
+			}
+
+			*Samples++ = (short)(9000.0 * Envelope * sin(Phase));
+			Phase += Step;
+			if (Phase >= TwoPi)
+			{
+				Phase -= TwoPi;
+			}
+		}
+	}
+}
+
+static void Sound_Init(void)
+{
+	Sound__Build(gSoundStart, gSoundTonesStart, (int)ARRAYSIZE(gSoundTonesStart));
+	Sound__Build(gSoundStop,  gSoundTonesStop,  (int)ARRAYSIZE(gSoundTonesStop));
+}
+
+static void Sound_Play(BOOL Start)
+{
+	if (!gConfig.PlaySounds)
+	{
+		return;
+	}
+	// SND_ASYNC keeps capture thread free, buffers stay valid for whole process lifetime
+	PlaySoundW((LPCWSTR)(Start ? gSoundStart : gSoundStop), NULL, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+}
+
+static BOOL Filename__Invalid(WCHAR Character)
+{
+	if (Character == WCAP_SEQ_MARKER)
+	{
+		return FALSE;
+	}
+	if (Character < 32)
+	{
+		return TRUE;
+	}
+	return StrChrW(L"<>:\"/\\|?*", Character) != NULL;
+}
+
+static void Filename__Sanitize(WCHAR* Text)
+{
+	for (WCHAR* Pos = Text; *Pos; Pos++)
+	{
+		if (Filename__Invalid(*Pos))
+		{
+			*Pos = L'-';
+		}
+	}
+
+	size_t Length = StrLenW(Text);
+	while (Length > 0 && (Text[Length - 1] == L' ' || Text[Length - 1] == L'.'))
+	{
+		Text[--Length] = 0;
+	}
+}
+
+static void Filename__Append(WCHAR* Out, size_t Capacity, size_t* Length, LPCWSTR Text)
+{
+	while (*Text && *Length + 1 < Capacity)
+	{
+		Out[(*Length)++] = *Text++;
+	}
+	Out[*Length] = 0;
+}
+
+static void Filename__Expand(LPCWSTR Template, const SYSTEMTIME* Time, UINT Seq, WCHAR* Out, size_t Capacity)
+{
+	size_t Length = 0;
+	Out[0] = 0;
+
+	for (LPCWSTR Pos = Template; *Pos; )
+	{
+		if (*Pos == L'{')
+		{
+			LPCWSTR End = StrChrW(Pos + 1, L'}');
+			if (End != NULL && End > Pos + 1)
+			{
+				size_t TokenLength = (size_t)(End - Pos - 1);
+				WCHAR Value[48];
+				BOOL Handled = TRUE;
+
+				#define WCAP_TOKEN(Text) (TokenLength == _countof(Text) - 1 && StrCmpNIW(Pos + 1, Text, (int)TokenLength) == 0)
+
+				if (WCAP_TOKEN(L"yyyy"))
+				{
+					StrFormat(Value, L"%04u", Time->wYear);
+				}
+				else if (WCAP_TOKEN(L"yy"))
+				{
+					StrFormat(Value, L"%02u", Time->wYear % 100);
+				}
+				else if (WCAP_TOKEN(L"MM"))
+				{
+					StrFormat(Value, L"%02u", Time->wMonth);
+				}
+				else if (WCAP_TOKEN(L"dd"))
+				{
+					StrFormat(Value, L"%02u", Time->wDay);
+				}
+				else if (WCAP_TOKEN(L"HH"))
+				{
+					StrFormat(Value, L"%02u", Time->wHour);
+				}
+				else if (WCAP_TOKEN(L"mm"))
+				{
+					StrFormat(Value, L"%02u", Time->wMinute);
+				}
+				else if (WCAP_TOKEN(L"ss"))
+				{
+					StrFormat(Value, L"%02u", Time->wSecond);
+				}
+				else if (WCAP_TOKEN(L"date"))
+				{
+					StrFormat(Value, L"%04u-%02u-%02u", Time->wYear, Time->wMonth, Time->wDay);
+				}
+				else if (WCAP_TOKEN(L"time"))
+				{
+					StrFormat(Value, L"%02u-%02u-%02u", Time->wHour, Time->wMinute, Time->wSecond);
+				}
+				else if (WCAP_TOKEN(L"datetime"))
+				{
+					StrFormat(Value, L"%04u-%02u-%02u_%02u-%02u-%02u",
+						Time->wYear, Time->wMonth, Time->wDay, Time->wHour, Time->wMinute, Time->wSecond);
+				}
+				else if (WCAP_TOKEN(L"seq") || WCAP_TOKEN(L"index") || WCAP_TOKEN(L"n"))
+				{
+					if (Seq == 0)
+					{
+						Value[0] = WCAP_SEQ_MARKER;
+						Value[1] = 0;
+					}
+					else
+					{
+						StrFormat(Value, L"%02u", Seq);
+					}
+				}
+				else
+				{
+					Handled = FALSE;
+				}
+
+				#undef WCAP_TOKEN
+
+				if (Handled)
+				{
+					Filename__Append(Out, Capacity, &Length, Value);
+					Pos = End + 1;
+					continue;
+				}
+			}
+		}
+
+		WCHAR Character[2] = { *Pos++, 0 };
+		Filename__Append(Out, Capacity, &Length, Character);
+	}
+}
+
+static UINT Filename__NextSequence(LPCWSTR Folder, LPCWSTR Prefix, LPCWSTR Suffix)
+{
+	WCHAR Pattern[MAX_PATH];
+	StrFormat(Pattern, L"%ls\\%ls*%ls.mp4", Folder, Prefix, Suffix);
+
+	WIN32_FIND_DATAW Data;
+	HANDLE Find = FindFirstFileW(Pattern, &Data);
+	if (Find == INVALID_HANDLE_VALUE)
+	{
+		return 1;
+	}
+
+	UINT Next = 1;
+	size_t PrefixLength = StrLenW(Prefix);
+	size_t SuffixLength = StrLenW(Suffix);
+	const size_t ExtensionLength = 4; // ".mp4"
+
+	do
+	{
+		LPCWSTR Name = Data.cFileName;
+		size_t NameLength = StrLenW(Name);
+		if (NameLength <= PrefixLength + SuffixLength + ExtensionLength)
+		{
+			continue;
+		}
+		if (StrCmpNIW(Name, Prefix, (int)PrefixLength) != 0)
+		{
+			continue;
+		}
+		if (StrCmpIW(Name + NameLength - ExtensionLength, L".mp4") != 0)
+		{
+			continue;
+		}
+		if (SuffixLength != 0 && StrCmpNIW(Name + NameLength - SuffixLength - ExtensionLength, Suffix, (int)SuffixLength) != 0)
+		{
+			continue;
+		}
+
+		size_t DigitCount = NameLength - PrefixLength - SuffixLength - ExtensionLength;
+		LPCWSTR Digits = Name + PrefixLength;
+		UINT Value = 0;
+		BOOL Valid = DigitCount > 0;
+
+		for (size_t i = 0; i < DigitCount; i++)
+		{
+			if (Digits[i] < L'0' || Digits[i] > L'9')
+			{
+				Valid = FALSE;
+				break;
+			}
+			if (Value < 100000u)
+			{
+				Value = Value * 10 + (UINT)(Digits[i] - L'0');
+			}
+		}
+
+		if (Valid && Value >= Next)
+		{
+			Next = Value + 1;
+		}
+	}
+	while (FindNextFileW(Find, &Data));
+	FindClose(Find);
+
+	return Next;
+}
+
+static void BuildRecordingPath(const SYSTEMTIME* Time)
+{
+	WCHAR Template[WCAP_FILENAME_TEMPLATE_MAX];
+	LPCWSTR Source = gConfig.FilenameTemplate[0] ? gConfig.FilenameTemplate : WCAP_DEFAULT_FILENAME_TEMPLATE;
+	StrCpyNW(Template, Source, _countof(Template));
+
+	WCHAR Stem[WCAP_FILENAME_MAX];
+	Filename__Expand(Template, Time, 0, Stem, _countof(Stem));
+	Filename__Sanitize(Stem);
+
+	WCHAR Name[WCAP_FILENAME_MAX];
+
+	LPCWSTR Marker = StrChrW(Stem, WCAP_SEQ_MARKER);
+	if (Marker)
+	{
+		WCHAR Prefix[WCAP_FILENAME_MAX];
+		StrCpyNW(Prefix, Stem, (int)(Marker - Stem) + 1);
+
+		UINT Sequence = Filename__NextSequence(gConfig.OutputFolder, Prefix, Marker + 1);
+		Filename__Expand(Template, Time, Sequence, Name, _countof(Name));
+		Filename__Sanitize(Name);
+	}
+	else
+	{
+		WCHAR Path[MAX_PATH];
+		StrFormat(Path, L"%ls\\%ls.mp4", gConfig.OutputFolder, Stem);
+
+		if (GetFileAttributesW(Path) == INVALID_FILE_ATTRIBUTES)
+		{
+			StrCpyW(Name, Stem);
+		}
+		else
+		{
+			// no {seq} in template, but such file already exists - append sequence number
+			WCHAR Prefix[WCAP_FILENAME_MAX];
+			StrFormat(Prefix, L"%ls-", Stem);
+
+			UINT Sequence = Filename__NextSequence(gConfig.OutputFolder, Prefix, L"");
+			StrFormat(Name, L"%ls%02u", Prefix, Sequence);
+		}
+	}
+
+	if (Name[0] == 0)
+	{
+		StrCpyW(Name, L"video");
+	}
+
+	StrFormat(gRecordingPath, L"%ls\\%ls.mp4", gConfig.OutputFolder, Name);
+}
+
 static void StartRecording(ID3D11Device* Device, HWND Window)
 {
 	SYSTEMTIME Time;
@@ -204,17 +555,13 @@ static void StartRecording(ID3D11Device* Device, HWND Window)
 	int Error = SHCreateDirectoryExW(NULL, gConfig.OutputFolder, NULL);
 	if (Error != ERROR_SUCCESS && Error != ERROR_FILE_EXISTS && Error != ERROR_ALREADY_EXISTS)
 	{
-		ShowNotification(L"Cannot create output folder!", L"Cannot Start Recording", NIIF_WARNING);
+		ShowNotification(L"无法创建输出文件夹！", L"无法开始录制", NIIF_WARNING);
 		ScreenCapture_Stop(&gCapture);
 		ID3D11Device_Release(Device);
 		return;
 	}
 
-	WCHAR Filename[256];
-	StrFormat(Filename, L"%04u%02u%02u_%02u%02u%02u.mp4", Time.wYear, Time.wMonth, Time.wDay, Time.wHour, Time.wMinute, Time.wSecond);
-
-	StrCpyW(gRecordingPath, gConfig.OutputFolder);
-	PathAppendW(gRecordingPath, Filename);
+	BuildRecordingPath(&Time);
 
 	DWM_TIMING_INFO Info = { .cbSize = sizeof(Info) };
 	HR(DwmGetCompositionTimingInfo(NULL, &Info));
@@ -247,7 +594,7 @@ static void StartRecording(ID3D11Device* Device, HWND Window)
 		HWND ApplicationWindow = gConfig.ApplicationLocalAudio && AudioCapture_CanCaptureApplicationLocal() ? Window : NULL;
 		if (!AudioCapture_Start(&gAudio, ApplicationWindow))
 		{
-			ShowNotification(L"Cannot capture audio!", L"Cannot Start Recording", NIIF_WARNING);
+			ShowNotification(L"无法捕获音频！", L"无法开始录制", NIIF_WARNING);
 			ScreenCapture_Stop(&gCapture);
 			ID3D11Device_Release(Device);
 			return;
@@ -281,6 +628,8 @@ static void StartRecording(ID3D11Device* Device, HWND Window)
 	UpdateTrayIcon(gIcon2);
 	gRecordingState = SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED);
 	gRecording = TRUE;
+
+	Sound_Play(TRUE);
 
 	ID3D11Device_Release(Device);
 }
@@ -332,6 +681,8 @@ static void EncodeCapturedAudio(void)
 
 static void StopRecording(void)
 {
+	BOOL WasRecording = gRecording;
+
 	gRecording = FALSE;
 	SetThreadExecutionState(gRecordingState);
 
@@ -356,6 +707,11 @@ static void StopRecording(void)
 
 	UpdateTrayIcon(gIcon1);
 	UpdateTrayTitle(WCAP_TITLE);
+
+	if (WasRecording)
+	{
+		Sound_Play(FALSE);
+	}
 }
 
 static ID3D11Device* CreateDevice(void)
@@ -392,7 +748,7 @@ static ID3D11Device* CreateDevice(void)
 	D3D_DRIVER_TYPE Driver = Adapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE;
 	if (FAILED(D3D11CreateDevice(Adapter, Driver, NULL, flags, (D3D_FEATURE_LEVEL[]) { D3D_FEATURE_LEVEL_11_0 }, 1, D3D11_SDK_VERSION, &Device, NULL, NULL)))
 	{
-		ShowNotification(L"Cannot to create D3D11 device!", L"Error", NIIF_ERROR);
+		ShowNotification(L"无法创建 D3D11 设备！", L"错误", NIIF_ERROR);
 		Device = NULL;
 	}
 	if (Adapter)
@@ -419,7 +775,7 @@ static void CaptureWindow(void)
 	HWND Window = GetForegroundWindow();
 	if (Window == NULL)
 	{
-		ShowNotification(L"No window is selected!", L"Cannot Start Recording", NIIF_WARNING);
+		ShowNotification(L"没有选中任何窗口！", L"无法开始录制", NIIF_WARNING);
 		return;
 	}
 
@@ -437,14 +793,14 @@ static void CaptureWindow(void)
 
 	if (Affinity != WDA_NONE)
 	{
-		ShowNotification(L"Window is excluded from capture!", L"Cannot Start Recording", NIIF_WARNING);
+		ShowNotification(L"该窗口不允许被捕获！", L"无法开始录制", NIIF_WARNING);
 		return;
 	}
 
 	LONG ExStyle = GetWindowLongW(Window, GWL_EXSTYLE);
 	if (ExStyle & WS_EX_TOOLWINDOW)
 	{
-		ShowNotification(L"Cannot capture toolbar window!", L"Cannot Start Recording", NIIF_WARNING);
+		ShowNotification(L"无法捕获工具窗口！", L"无法开始录制", NIIF_WARNING);
 		return;
 	}
 
@@ -457,7 +813,7 @@ static void CaptureWindow(void)
 	if (!ScreenCapture_CreateForWindow(&gCapture, Device, Window, gConfig.OnlyClientArea, !gConfig.KeepRoundedWindowCorners))
 	{
 		ID3D11Device_Release(Device);
-		ShowNotification(L"Cannot record selected window!", L"Error", NIIF_WARNING);
+		ShowNotification(L"无法录制所选窗口！", L"错误", NIIF_WARNING);
 		return;
 	}
 
@@ -472,7 +828,7 @@ static void CaptureMonitor(void)
 	HMONITOR Monitor = MonitorFromPoint(Mouse, MONITOR_DEFAULTTONULL);
 	if (Monitor == NULL)
 	{
-		ShowNotification(L"Unknown monitor!", L"Cannot Start Recording", NIIF_WARNING);
+		ShowNotification(L"未找到显示器！", L"无法开始录制", NIIF_WARNING);
 		return;
 	}
 
@@ -484,7 +840,7 @@ static void CaptureMonitor(void)
 
 	if (!ScreenCapture_CreateForMonitor(&gCapture, Device, Monitor, NULL))
 	{
-		ShowNotification(L"Cannot record selected monitor!", L"Error", NIIF_WARNING);
+		ShowNotification(L"无法录制所选显示器！", L"错误", NIIF_WARNING);
 		return;
 	}
 
@@ -499,7 +855,7 @@ static void CaptureRegionInit(void)
 	HMONITOR Monitor = MonitorFromPoint(Mouse, MONITOR_DEFAULTTONULL);
 	if (Monitor == NULL)
 	{
-		ShowNotification(L"Unknown monitor!", L"Cannot Start Recording", NIIF_WARNING);
+		ShowNotification(L"未找到显示器！", L"无法开始录制", NIIF_WARNING);
 		return;
 	}
 
@@ -509,7 +865,7 @@ static void CaptureRegionInit(void)
 	HDC DeviceContext = CreateDCW(L"DISPLAY", Info.szDevice, NULL, NULL);
 	if (DeviceContext == NULL)
 	{
-		ShowNotification(L"Error getting HDC of monitor!", L"Cannot Start Recording", NIIF_WARNING);
+		ShowNotification(L"获取显示器画面失败！", L"无法开始录制", NIIF_WARNING);
 		return;
 	}
 
@@ -623,7 +979,7 @@ static void CaptureRegion(void)
 
 	if (!ScreenCapture_CreateForMonitor(&gCapture, Device, gRectMonitor, &Rect))
 	{
-		ShowNotification(L"Cannot record monitor!", L"Error", NIIF_WARNING);
+		ShowNotification(L"无法录制显示器！", L"错误", NIIF_WARNING);
 		CaptureRegionRelease();
 		return;
 	}
@@ -689,26 +1045,52 @@ static int GetPointResize(int X, int Y)
 
 void DisableHotKeys(void)
 {
-	UnregisterHotKey(gWindow, HOT_RECORD_MONITOR);
-	UnregisterHotKey(gWindow, HOT_RECORD_WINDOW);
-	UnregisterHotKey(gWindow, HOT_RECORD_REGION);
+	for (int i = 1; i <= HOT_COUNT; i++)
+	{
+		UnregisterHotKey(gWindow, i);
+	}
 }
 
 BOOL EnableHotKeys(void)
 {
 	BOOL Success = TRUE;
-	if (gConfig.ShortcutMonitor)
+
+	const DWORD Shortcuts[HOT_COUNT] =
 	{
-		Success = Success && RegisterHotKey(gWindow, HOT_RECORD_MONITOR, HOT_GET_MOD(gConfig.ShortcutMonitor), HOT_GET_KEY(gConfig.ShortcutMonitor));
-	}
-	if (gConfig.ShortcutWindow)
+		gConfig.ShortcutWindow,
+		gConfig.ShortcutMonitor,
+		gConfig.ShortcutRegion,
+		gConfig.ShortcutToggle,
+		gConfig.ShortcutStop,
+	};
+
+	for (int i = 0; i < HOT_COUNT; i++)
 	{
-		Success = Success && RegisterHotKey(gWindow, HOT_RECORD_WINDOW, HOT_GET_MOD(gConfig.ShortcutWindow), HOT_GET_KEY(gConfig.ShortcutWindow));
+		if (Shortcuts[i] == 0)
+		{
+			continue;
+		}
+
+		// same combination assigned to multiple actions - register only first one
+		BOOL Duplicate = FALSE;
+		for (int j = 0; j < i; j++)
+		{
+			if (Shortcuts[j] == Shortcuts[i])
+			{
+				Duplicate = TRUE;
+			}
+		}
+		if (Duplicate)
+		{
+			continue;
+		}
+
+		if (!RegisterHotKey(gWindow, i + 1, HOT_GET_MOD(Shortcuts[i]), HOT_GET_KEY(Shortcuts[i])))
+		{
+			Success = FALSE;
+		}
 	}
-	if (gConfig.ShortcutRegion)
-	{
-		Success = Success && RegisterHotKey(gWindow, HOT_RECORD_REGION, HOT_GET_MOD(gConfig.ShortcutRegion), HOT_GET_KEY(gConfig.ShortcutRegion));
-	}
+
 	return Success;
 }
 
@@ -991,8 +1373,8 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
 
 			AppendMenuW(Menu, MF_STRING, CMD_WCAP, WCAP_TITLE);
 			AppendMenuW(Menu, MF_SEPARATOR, 0, NULL);
-			AppendMenuW(Menu, MF_STRING | (gRecording ? MF_DISABLED : 0), CMD_SETTINGS, L"Settings");
-			AppendMenuW(Menu, MF_STRING, CMD_QUIT, L"Exit");
+			AppendMenuW(Menu, MF_STRING | (gRecording ? MF_DISABLED : 0), CMD_SETTINGS, L"设置(&S)...");
+			AppendMenuW(Menu, MF_STRING, CMD_QUIT, L"退出(&X)");
 
 			POINT Mouse;
 			GetCursorPos(&Mouse);
@@ -1040,33 +1422,37 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
 	}
 	else if (Message == WM_HOTKEY)
 	{
+		if (WParam == HOT_RECORD_STOP)
+		{
+			if (gRecording)
+			{
+				StopRecording();
+			}
+			return 0;
+		}
+
 		if (gRecording)
 		{
+			// any other recording hotkey stops current recording
 			StopRecording();
 		}
-		else if (!gRecordingStarted)
+		else if (!gRecordingStarted && gRectContext == NULL)
 		{
-			if (gRectContext == NULL)
+			gRecordingStarted = TRUE;
+			if (WParam == HOT_RECORD_WINDOW)
 			{
-				if (WParam == HOT_RECORD_WINDOW)
-				{
-					gRecordingStarted = TRUE;
-					CaptureWindow();
-					gRecordingStarted = FALSE;
-				}
-				else if (WParam == HOT_RECORD_MONITOR)
-				{
-					gRecordingStarted = TRUE;
-					CaptureMonitor();
-					gRecordingStarted = FALSE;
-				}
-				else if (WParam == HOT_RECORD_REGION)
-				{
-					gRecordingStarted = TRUE;
-					CaptureRegionInit();
-					gRecordingStarted = FALSE;
-				}
+				CaptureWindow();
 			}
+			else if (WParam == HOT_RECORD_MONITOR || WParam == HOT_RECORD_TOGGLE)
+			{
+				// toggle starts recording of current monitor
+				CaptureMonitor();
+			}
+			else if (WParam == HOT_RECORD_REGION)
+			{
+				CaptureRegionInit();
+			}
+			gRecordingStarted = FALSE;
 		}
 		return 0;
 	}
@@ -1085,7 +1471,7 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
 			StrFormatByteSizeW(FileSize, SizeText, _countof(SizeText));
 
 			WCHAR Text[1024];
-			StrFormat(Text, L"Recording: %dx%d @ %.2f\nLength: %ls\nBitrate: %u kbit/s\nSize: %ls\nFramedrop: %u",
+			StrFormat(Text, L"正在录制：%dx%d @ %.2f\n时长：%ls\n码率：%u kbit/s\n大小：%ls\n丢帧：%u",
 				gEncoder.OutputWidth, gEncoder.OutputHeight,
 				(float)gEncoder.FramerateNum / (float)gEncoder.FramerateDen,
 				LengthText,
@@ -1107,7 +1493,7 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
 	}
 	else if (Message == WM_WCAP_ALREADY_RUNNING)
 	{
-		ShowNotification(L"wcap is already running!", NULL, NIIF_INFO);
+		ShowNotification(L"wcap 已经在运行了！", NULL, NIIF_INFO);
 		return 0;
 	}
 	else if (Message == WM_TASKBARCREATED)
@@ -1166,7 +1552,7 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
 					SetTextAlign(Context, TA_BOTTOM | TA_LEFT);
 					SetTextColor(Context, RGB(255, 255, 255));
 
-					const WCHAR TextResize[] = L"Resize:  ";
+					const WCHAR TextResize[] = L"快捷尺寸：";
 
 					SIZE Size;
 					GetTextExtentPoint32W(Context, TextResize, _countof(TextResize) - 1, &Size);
@@ -1209,8 +1595,8 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
 					SelectObject(Context, GetStockObject(DC_PEN));
 					SelectObject(Context, GetStockObject(DC_BRUSH));
 
-					const WCHAR Line1[] = L"Select region with the mouse and press ENTER to start capture.";
-					const WCHAR Line2[] = L"Press ESC to cancel.";
+					const WCHAR Line1[] = L"按住鼠标左键框选录制区域，按回车键开始录制。";
+					const WCHAR Line2[] = L"按 ESC 键取消。";
 
 					const WCHAR* Lines[] = { Line1, Line2 };
 					const int LineLengths[] = { _countof(Line1) - 1, _countof(Line2) - 1 };
@@ -1395,7 +1781,7 @@ void WinMainCRTStartup()
 
 	if (!ScreenCapture_IsSupported())
 	{
-		MessageBoxW(NULL, L"Windows 10 Version 1903, May 2019 Update (19H1) or newer is required!", WCAP_TITLE, MB_ICONEXCLAMATION);
+		MessageBoxW(NULL, L"需要 Windows 10 1903 版本（2019 年 5 月更新，19H1）或更高版本！", WCAP_TITLE, MB_ICONEXCLAMATION);
 		ExitProcess(0);
 	}
 
@@ -1408,6 +1794,7 @@ void WinMainCRTStartup()
 	Config_Load(&gConfig, gConfigPath);
 	ScreenCapture_Create(&gCapture, &OnCaptureFrame, false);
 	Encoder_Init(&gEncoder);
+	Sound_Init();
 
 	QueryPerformanceFrequency(&gTickFreq);
 
@@ -1451,7 +1838,7 @@ void WinMainCRTStartup()
 	if (!EnableHotKeys())
 	{
 		MessageBoxW(NULL,
-			L"Cannot register wcap keyboard shortcuts.\nSome other application might already use shorcuts.\nPlease check & adjust the settings!",
+			L"无法注册 wcap 全局快捷键。\n可能有其他程序已经占用了相同的组合键。\n请在设置中调整快捷键。",
 			WCAP_TITLE, MB_ICONEXCLAMATION);
 	}
 

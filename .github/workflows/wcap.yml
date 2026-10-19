@@ -2,48 +2,35 @@ name: wcap
 
 on:
   push:
-    branches: main
+    branches: [main]
     paths-ignore:
-      - '**/README.md'
+      - '**/*.md'
   pull_request:
-    branches: main
+    branches: [main]
     paths-ignore:
-      - '**/README.md'
+      - '**/*.md'
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Build (${{ matrix.arch }})
+        shell: cmd
+        run: build.cmd ${{ matrix.arch }}
+
+      - name: Upload wcap-${{ matrix.arch }}.exe
+        uses: actions/upload-artifact@v4
         with:
-          path: repo
-
-      - name: Build (x64)
-        shell: cmd
-        run: cd repo && build.cmd x64
-
-      - name: Build (arm64)
-        shell: cmd
-        run: cd repo && build.cmd arm64
-
-      - name: Checkout wiki
-        uses: actions/checkout@v4
-        if: ${{ github.event_name == 'push' && github.ref_name == 'main' }}
-        with:
-          repository: ${{github.repository}}.wiki
-          path: wiki
-
-      - name: Upload binaries
-        if: ${{ github.event_name == 'push' && github.ref_name == 'main' }}
-        shell: cmd
-        run: |
-          copy repo\wcap-x64.exe   wiki
-          copy repo\wcap-arm64.exe wiki
-
-          cd wiki
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git commit --all --amend --no-edit
-          git push --force-with-lease
+          name: wcap-${{ matrix.arch }}
+          path: wcap-${{ matrix.arch }}.exe
+          if-no-files-found: error
+          retention-days: 30

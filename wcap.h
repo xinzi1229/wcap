@@ -17,10 +17,13 @@
 #define WCAP_TITLE L"wcap"
 #define WCAP_URL   L"https://github.com/mmozeiko/wcap"
 
+// output file name template, supports: {date} {time} {datetime} {yyyy} {yy} {MM} {dd} {HH} {mm} {ss} {seq}
+#define WCAP_DEFAULT_FILENAME_TEMPLATE L"wcap-{date}-{seq}"
+
 #if defined(WCAP_GIT_INFO)
-#	define WCAP_CONFIG_TITLE "wcap, " __DATE__ " [" WCAP_GIT_INFO "]"
+#	define WCAP_CONFIG_TITLE "wcap 设置, " __DATE__ " [" WCAP_GIT_INFO "]"
 #else
-#	define WCAP_CONFIG_TITLE "wcap, " __DATE__
+#	define WCAP_CONFIG_TITLE "wcap 设置, " __DATE__
 #endif
 
 #ifdef _DEBUG
