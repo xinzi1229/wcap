@@ -11,6 +11,9 @@ on:
       - '**/*.md'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-2022
@@ -34,3 +37,37 @@ jobs:
           path: wcap-${{ matrix.arch }}.exe
           if-no-files-found: error
           retention-days: 30
+
+  release:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wcap-*
+          merge-multiple: true
+          path: dist
+
+      - name: Publish rolling release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          ls -l dist
+          TAG=latest
+          TS=$(TZ=Asia/Shanghai date +'%Y-%m-%d %H:%M:%S %Z')
+          NOTES=$(printf '自动构建于 %s\n\n- commit: `%s`\n- 构建日志: %s\n' "$TS" "$SHA" "$RUN_URL")
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release edit "$TAG" --repo "$REPO" --title "wcap 最新构建" --notes "$NOTES"
+          else
+            gh release create "$TAG" --repo "$REPO" --title "wcap 最新构建" --notes "$NOTES" --target "$SHA"
+          fi
+          gh release upload "$TAG" dist/wcap-x64.exe dist/wcap-arm64.exe --repo "$REPO" --clobber
+          gh release view "$TAG" --repo "$REPO"
