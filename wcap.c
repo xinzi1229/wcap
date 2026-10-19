@@ -13,6 +13,7 @@
 #include <windowsx.h>
 #include <mmsystem.h>
 #include <math.h>
+#include <wchar.h>
 
 #pragma comment (lib, "ntdll")
 #pragma comment (lib, "kernel32")
@@ -322,7 +323,7 @@ static void Filename__Sanitize(WCHAR* Text)
 		}
 	}
 
-	size_t Length = StrLenW(Text);
+	size_t Length = wcslen(Text);
 	while (Length > 0 && (Text[Length - 1] == L' ' || Text[Length - 1] == L'.'))
 	{
 		Text[--Length] = 0;
@@ -443,14 +444,14 @@ static UINT Filename__NextSequence(LPCWSTR Folder, LPCWSTR Prefix, LPCWSTR Suffi
 	}
 
 	UINT Next = 1;
-	size_t PrefixLength = StrLenW(Prefix);
-	size_t SuffixLength = StrLenW(Suffix);
+	size_t PrefixLength = wcslen(Prefix);
+	size_t SuffixLength = wcslen(Suffix);
 	const size_t ExtensionLength = 4; // ".mp4"
 
 	do
 	{
 		LPCWSTR Name = Data.cFileName;
-		size_t NameLength = StrLenW(Name);
+		size_t NameLength = wcslen(Name);
 		if (NameLength <= PrefixLength + SuffixLength + ExtensionLength)
 		{
 			continue;
