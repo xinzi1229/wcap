@@ -16,6 +16,7 @@ Get latest binary here: [wcap-x64.exe][] or [wcap-arm64.exe][]
    * `Ctrl + Alt + R` 开始/停止录制（默认录制鼠标所在显示器）
    * `Ctrl + Alt + S` 仅停止录制
    * `Ctrl + PrintScreen` 录制显示器、`Ctrl + Win + PrintScreen` 录制窗口、`Ctrl + Shift + PrintScreen` 录制区域（原有）
+   * **独占全屏游戏里也能用**：除 `RegisterHotKey` 外还挂了一个低级键盘钩子（`WH_KEYBOARD_LL`）。像三国志12这类用 `ChangeDisplaySettingsEx` 切独占全屏的老游戏，系统不会投递 `WM_HOTKEY`，钩子则能在原始输入线程之前看到按键。默认开启，设置里“快捷键 → 全屏热键兼容”可关闭
  * **自定义文件名**：设置里“文件名格式”支持占位符，默认 `wcap-{date}-{seq}`，输出如 `wcap-2026-10-19-01.mp4`
    * `{date}` → 2026-10-19，`{time}` → 14-32-05，`{datetime}` → 2026-10-19_14-32-05
    * `{yyyy}` `{yy}` `{MM}` `{dd}` `{HH}` `{mm}` `{ss}` 单独的年月日时分秒

@@ -50,6 +50,7 @@ __declspec(dllexport) DWORD NvOptimusEnablement = 1;
 #define WM_WCAP_STOP_CAPTURE    (WM_USER+2)
 #define WM_WCAP_TRAY_TITLE      (WM_USER+3)
 #define WM_WCAP_COMMAND         (WM_USER+4)
+#define WM_WCAP_HOOK_HOTKEY     (WM_USER+5)
 
 #define WCAP_AUDIO_CAPTURE_TIMER    1
 #define WCAP_AUDIO_CAPTURE_INTERVAL 100 // msec
@@ -1360,6 +1361,253 @@ BOOL EnableHotKeys(void)
 	return Success;
 }
 
+//
+// low-level keyboard hook
+//
+// RegisterHotKey is enough for windowed apps, but titles that switch the
+// display into exclusive fullscreen (old DX9 games like San12PK) never let the
+// system deliver WM_HOTKEY. A WH_KEYBOARD_LL hook runs in front of the raw
+// input thread, so it still sees the keys in that case.
+//
+// The hook lives on its own thread with its own message loop: the callback is
+// dispatched to the installing thread, and stalling it (a long stop-encoding
+// on the main thread would do exactly that) makes Windows silently drop the
+// hook after a short timeout.
+//
+
+static HHOOK gHotKeyHook;
+static HANDLE gHotKeyHookThread;
+static HANDLE gHotKeyHookStop;
+static DWORD gHotKeyHookHeldKey; // vk of the hotkey that is currently held
+static BOOL  gHotKeyHookHeldSwallow;
+static DWORD gHotKeyLastTick[HOT_COUNT + 1];
+
+static void HandleHotKey(int Id)
+{
+	if (Id < 1 || Id > HOT_COUNT)
+	{
+		return;
+	}
+
+	// the same combination can arrive from both RegisterHotKey and the hook
+	// below - act on the first one only
+	DWORD Now = GetTickCount();
+	if (Now - gHotKeyLastTick[Id] < 250)
+	{
+		return;
+	}
+	gHotKeyLastTick[Id] = Now;
+
+	if (Id == HOT_RECORD_STOP)
+	{
+		if (gRecording)
+		{
+			StopRecording();
+		}
+		return;
+	}
+
+	if (gRecording)
+	{
+		// any other recording hotkey stops current recording
+		StopRecording();
+	}
+	else if (!gRecordingStarted && gRectContext == NULL)
+	{
+		gRecordingStarted = TRUE;
+		if (Id == HOT_RECORD_WINDOW)
+		{
+			CaptureWindow();
+		}
+		else if (Id == HOT_RECORD_MONITOR || Id == HOT_RECORD_TOGGLE)
+		{
+			// toggle starts recording of current monitor
+			CaptureMonitor();
+		}
+		else if (Id == HOT_RECORD_REGION)
+		{
+			CaptureRegionInit();
+		}
+		gRecordingStarted = FALSE;
+	}
+}
+
+static LRESULT CALLBACK HotKey__HookProc(int Code, WPARAM WParam, LPARAM LParam)
+{
+	if (Code != HC_ACTION)
+	{
+		return CallNextHookEx(NULL, Code, WParam, LParam);
+	}
+
+	const KBDLLHOOKSTRUCT* Key = (const KBDLLHOOKSTRUCT*)LParam;
+
+	if (Key->flags & LLKHF_INJECTED)
+	{
+		return CallNextHookEx(NULL, Code, WParam, LParam);
+	}
+
+	if (WParam == WM_KEYUP || WParam == WM_SYSKEYUP)
+	{
+		if (Key->vkCode == gHotKeyHookHeldKey)
+		{
+			gHotKeyHookHeldKey = 0;
+			gHotKeyHookHeldSwallow = FALSE;
+		}
+		return CallNextHookEx(NULL, Code, WParam, LParam);
+	}
+
+	if (WParam != WM_KEYDOWN && WParam != WM_SYSKEYDOWN)
+	{
+		return CallNextHookEx(NULL, Code, WParam, LParam);
+	}
+
+	// auto-repeat while holding the combination - the system path does not
+	// repeat either
+	if (Key->vkCode == gHotKeyHookHeldKey)
+	{
+		return gHotKeyHookHeldSwallow ? 1 : CallNextHookEx(NULL, Code, WParam, LParam);
+	}
+
+	const DWORD Shortcuts[HOT_COUNT] =
+	{
+		gConfig.ShortcutWindow,
+		gConfig.ShortcutMonitor,
+		gConfig.ShortcutRegion,
+		gConfig.ShortcutToggle,
+		gConfig.ShortcutStop,
+	};
+
+	// keys typed into our own windows (settings dialog while recording a new
+	// shortcut, region selection overlay) must reach them untouched
+	HWND Foreground = GetForegroundWindow();
+	if (Foreground)
+	{
+		DWORD ForegroundPid = 0;
+		GetWindowThreadProcessId(Foreground, &ForegroundPid);
+		if (ForegroundPid == GetCurrentProcessId())
+		{
+			return CallNextHookEx(NULL, Code, WParam, LParam);
+		}
+	}
+
+	DWORD Mod = 0;
+	if (GetAsyncKeyState(VK_CONTROL) & 0x8000) Mod |= MOD_CONTROL;
+	if (GetAsyncKeyState(VK_MENU)    & 0x8000) Mod |= MOD_ALT;
+	if (GetAsyncKeyState(VK_SHIFT)   & 0x8000) Mod |= MOD_SHIFT;
+	if ((GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000) Mod |= MOD_WIN;
+
+	for (int i = 0; i < HOT_COUNT; i++)
+	{
+		if (Shortcuts[i] == 0)
+		{
+			continue;
+		}
+		if (HOT_GET_KEY(Shortcuts[i]) != Key->vkCode || HOT_GET_MOD(Shortcuts[i]) != Mod)
+		{
+			continue;
+		}
+
+		// combination assigned to several actions - let the system path pick
+		BOOL Duplicate = FALSE;
+		for (int j = 0; j < i; j++)
+		{
+			if (Shortcuts[j] == Shortcuts[i])
+			{
+				Duplicate = TRUE;
+			}
+		}
+		if (Duplicate)
+		{
+			continue;
+		}
+
+		gHotKeyHookHeldKey = Key->vkCode;
+		gHotKeyHookHeldSwallow = Mod ? TRUE : FALSE;
+		if (gWindow)
+		{
+			PostMessageW(gWindow, WM_WCAP_HOOK_HOTKEY, i + 1, 0);
+		}
+
+		// swallow the combination so the game does not act on it as well
+		// (bare-key shortcuts are passed through - they are often real game keys)
+		return gHotKeyHookHeldSwallow ? 1 : CallNextHookEx(NULL, Code, WParam, LParam);
+	}
+
+	return CallNextHookEx(NULL, Code, WParam, LParam);
+}
+
+static DWORD WINAPI HotKey__HookThread(LPVOID Param)
+{
+	(void)Param;
+
+	gHotKeyHook = SetWindowsHookExW(WH_KEYBOARD_LL, HotKey__HookProc, NULL, 0);
+	if (!gHotKeyHook)
+	{
+		return 0;
+	}
+
+	for (;;)
+	{
+		DWORD Wait = MsgWaitForMultipleObjectsEx(1, &gHotKeyHookStop, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+		if (Wait != WAIT_OBJECT_0 + 1)
+		{
+			break;
+		}
+
+		MSG Message;
+		while (PeekMessageW(&Message, NULL, 0, 0, PM_REMOVE))
+		{
+			TranslateMessage(&Message);
+			DispatchMessageW(&Message);
+		}
+	}
+
+	UnhookWindowsHookEx(gHotKeyHook);
+	gHotKeyHook = NULL;
+	return 0;
+}
+
+static void HotKeyHook_Stop(void)
+{
+	if (!gHotKeyHookThread)
+	{
+		return;
+	}
+
+	SetEvent(gHotKeyHookStop);
+	WaitForSingleObject(gHotKeyHookThread, 3000);
+	CloseHandle(gHotKeyHookThread);
+	gHotKeyHookThread = NULL;
+	gHotKeyHookHeldKey = 0;
+	gHotKeyHookHeldSwallow = FALSE;
+}
+
+static void HotKeyHook_Start(void)
+{
+	if (gHotKeyHookThread || !gConfig.HotKeyHook)
+	{
+		return;
+	}
+
+	if (!gHotKeyHookStop)
+	{
+		gHotKeyHookStop = CreateEventW(NULL, TRUE, FALSE, NULL);
+		if (!gHotKeyHookStop)
+		{
+			return;
+		}
+	}
+
+	ResetEvent(gHotKeyHookStop);
+	gHotKeyHookThread = CreateThread(NULL, 0, HotKey__HookThread, NULL, 0, NULL);
+}
+
+static void HotKeyHook_Restart(void)
+{
+	HotKeyHook_Stop();
+	HotKeyHook_Start();
+}
+
 static void AdjustRectSizeMultipleOf2(int Adjust, int Ref)
 {
 	int W = gRectSelection[Ref].x - gRectSelection[Adjust].x;
@@ -1385,6 +1633,7 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
 		{
 			StopRecording();
 		}
+		HotKeyHook_Stop();
 		RemoveTrayIcon(Window);
 		PostQuitMessage(0);
 		return 0;
@@ -1674,6 +1923,7 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
 					Config_Save(&gConfig, gConfigPath);
 					DisableHotKeys();
 					EnableHotKeys();
+					HotKeyHook_Restart();
 					Indicator_Update();
 				}
 			}
@@ -1689,6 +1939,7 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
 					Config_Save(&gConfig, gConfigPath);
 					DisableHotKeys();
 					EnableHotKeys();
+					HotKeyHook_Restart();
 					Indicator_Update();
 				}
 			}
@@ -1702,38 +1953,12 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
 	}
 	else if (Message == WM_HOTKEY)
 	{
-		if (WParam == HOT_RECORD_STOP)
-		{
-			if (gRecording)
-			{
-				StopRecording();
-			}
-			return 0;
-		}
-
-		if (gRecording)
-		{
-			// any other recording hotkey stops current recording
-			StopRecording();
-		}
-		else if (!gRecordingStarted && gRectContext == NULL)
-		{
-			gRecordingStarted = TRUE;
-			if (WParam == HOT_RECORD_WINDOW)
-			{
-				CaptureWindow();
-			}
-			else if (WParam == HOT_RECORD_MONITOR || WParam == HOT_RECORD_TOGGLE)
-			{
-				// toggle starts recording of current monitor
-				CaptureMonitor();
-			}
-			else if (WParam == HOT_RECORD_REGION)
-			{
-				CaptureRegionInit();
-			}
-			gRecordingStarted = FALSE;
-		}
+		HandleHotKey((int)WParam);
+		return 0;
+	}
+	else if (Message == WM_WCAP_HOOK_HOTKEY)
+	{
+		HandleHotKey((int)WParam);
 		return 0;
 	}
 	else if (Message == WM_WCAP_TRAY_TITLE)
@@ -2124,6 +2349,7 @@ void WinMainCRTStartup()
 			L"无法注册 wcap 全局快捷键。\n可能有其他程序已经占用了相同的组合键。\n请在设置中调整快捷键。",
 			WCAP_TITLE, MB_ICONEXCLAMATION);
 	}
+	HotKeyHook_Start();
 
 	for (;;)
 	{

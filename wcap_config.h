@@ -61,6 +61,7 @@ typedef struct
 	DWORD ShortcutRegion;
 	DWORD ShortcutToggle;
 	DWORD ShortcutStop;
+	BOOL HotKeyHook;
 }
 Config;
 
@@ -129,6 +130,7 @@ static BOOL Config_ShowDialog(Config* C);
 #define ID_SHORTCUT_REGION         420
 #define ID_SHORTCUT_TOGGLE         390
 #define ID_SHORTCUT_STOP           395
+#define ID_HOTKEY_HOOK             396
 
 // control types
 #define ITEM_CHECKBOX (1<<0)
@@ -154,7 +156,7 @@ static BOOL Config_ShowDialog(Config* C);
 #define COL11W 130
 #define ROW0H 120
 #define ROW1H 126
-#define ROW2H 84
+#define ROW2H 100
 
 #define PADDING 4             // padding for dialog and group boxes
 #define BUTTON_WIDTH 50       // normal button width
@@ -399,6 +401,7 @@ static void Config__SetDialogValues(HWND Window, Config* C)
 	Config__FormatKey(C->ShortcutRegion, Text);
 	SetDlgItemTextW(Window, ID_SHORTCUT_REGION, Text);
 	SetWindowLongW(GetDlgItem(Window, ID_SHORTCUT_REGION), GWLP_USERDATA, C->ShortcutRegion);
+	CheckDlgButton(Window, ID_HOTKEY_HOOK, C->HotKeyHook);
 
 	EnableWindow(GetDlgItem(Window, ID_GPU_ENCODER + 1),  C->HardwareEncoder);
 	EnableWindow(GetDlgItem(Window, ID_LIMIT_LENGTH + 1), C->EnableLimitLength);
@@ -555,6 +558,7 @@ static LRESULT CALLBACK Config__DialogProc(HWND Window, UINT Message, WPARAM WPa
 			C->ShortcutMonitor = GetWindowLongW(GetDlgItem(Window, ID_SHORTCUT_MONITOR), GWLP_USERDATA);
 			C->ShortcutWindow  = GetWindowLongW(GetDlgItem(Window, ID_SHORTCUT_WINDOW),  GWLP_USERDATA);
 			C->ShortcutRegion  = GetWindowLongW(GetDlgItem(Window, ID_SHORTCUT_REGION),  GWLP_USERDATA);
+			C->HotKeyHook      = IsDlgButtonChecked(Window, ID_HOTKEY_HOOK);
 
 			EndDialog(Window, TRUE);
 			return TRUE;
@@ -921,6 +925,7 @@ void Config_Defaults(Config* C)
 		.ShortcutRegion = HOT_KEY(VK_SNAPSHOT, MOD_CONTROL | MOD_SHIFT),
 		.ShortcutToggle = HOT_KEY(L'R', MOD_CONTROL | MOD_ALT),
 		.ShortcutStop   = HOT_KEY(L'S', MOD_CONTROL | MOD_ALT),
+		.HotKeyHook     = TRUE,
 	};
 
 	StrCpyW(C->FilenameTemplate, WCAP_DEFAULT_FILENAME_TEMPLATE);
@@ -1041,6 +1046,7 @@ void Config_Load(Config* C, LPCWSTR FileName)
 	Config__GetInt(FileName, L"ShortcutRect",    &C->ShortcutRegion,  NULL);
 	Config__GetInt(FileName, L"ShortcutToggle",  &C->ShortcutToggle,  NULL);
 	Config__GetInt(FileName, L"ShortcutStop",    &C->ShortcutStop,    NULL);
+	Config__GetBool(FileName, L"HotKeyHook",     &C->HotKeyHook);
 
 	Config__ValidateVideoProfile(C);
 }
@@ -1095,6 +1101,7 @@ void Config_Save(Config* C, LPCWSTR FileName)
 	Config__WriteInt(FileName, L"ShortcutRect",    C->ShortcutRegion);
 	Config__WriteInt(FileName, L"ShortcutToggle",  C->ShortcutToggle);
 	Config__WriteInt(FileName, L"ShortcutStop",    C->ShortcutStop);
+	WritePrivateProfileStringW(INI_SECTION, L"HotKeyHook", C->HotKeyHook ? L"1" : L"0", FileName);
 }
 
 BOOL Config_ShowDialog(Config* C)
@@ -1182,6 +1189,7 @@ BOOL Config_ShowDialog(Config* C)
 					{ "录制显示器",    ID_SHORTCUT_MONITOR, ITEM_HOTKEY, 64 },
 					{ "录制窗口",      ID_SHORTCUT_WINDOW,  ITEM_HOTKEY, 64 },
 					{ "录制区域",      ID_SHORTCUT_REGION,  ITEM_HOTKEY, 64 },
+					{ "全屏热键兼容",  ID_HOTKEY_HOOK,      ITEM_CHECKBOX },
 					{ NULL },
 				},
 			},
