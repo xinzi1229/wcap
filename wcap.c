@@ -180,9 +180,9 @@ static void TimingMark(const char* Name)
 	CloseHandle(File);
 }
 
-static void TimingBegin(void)
+static void TimingBegin(BOOL Enabled)
 {
-	gTimingOn = gConfig.TimingLog;
+	gTimingOn = Enabled;
 	if (!gTimingOn)
 	{
 		return;
@@ -1520,7 +1520,7 @@ static void HandleHotKey(int Id)
 	else if (!gRecordingStarted && gRectContext == NULL)
 	{
 		gRecordingStarted = TRUE;
-		TimingBegin();
+		TimingBegin(gConfig.TimingLog);
 		if (Id == HOT_RECORD_WINDOW)
 		{
 			CaptureWindow();
