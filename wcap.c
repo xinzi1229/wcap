@@ -151,6 +151,54 @@ static UINT64 gRecordingNextTooltip;
 static EXECUTION_STATE gRecordingState;
 static WCHAR gRecordingPath[MAX_PATH];
 
+// start-up timing diagnostics, enabled with TimingLog=1 in the ini
+static BOOL gTimingOn;
+static BOOL gTimingFirstFrame;
+static WCHAR gTimingPath[MAX_PATH];
+static uint64_t gTimingStart;
+
+static void TimingMark(const char* Name)
+{
+	if (!gTimingOn)
+	{
+		return;
+	}
+
+	HANDLE File = CreateFileW(gTimingPath, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (File == INVALID_HANDLE_VALUE)
+	{
+		return;
+	}
+
+	char Line[96];
+	int Length = _snprintf(Line, _countof(Line), "%-14s %6llu ms\n", Name, (unsigned long long)(GetTickCount64() - gTimingStart));
+	if (Length > 0)
+	{
+		DWORD Written;
+		WriteFile(File, Line, (DWORD)Length, &Written, NULL);
+	}
+	CloseHandle(File);
+}
+
+static void TimingBegin(void)
+{
+	gTimingOn = gConfig.TimingLog;
+	if (!gTimingOn)
+	{
+		return;
+	}
+
+	if (gTimingPath[0] == 0)
+	{
+		StrCpyNW(gTimingPath, gConfigPath, _countof(gTimingPath));
+		PathRenameExtensionW(gTimingPath, L".timing.log");
+	}
+
+	DeleteFileW(gTimingPath);
+	gTimingStart = GetTickCount64();
+	TimingMark("hotkey");
+}
+
 // when selecting rectangle to record
 static HMONITOR gRectMonitor;
 static HDC gRectContext;
@@ -868,6 +916,7 @@ static void StartRecording(ID3D11Device* Device, HWND Window)
 	}
 
 	BuildRecordingPath(&Time);
+	TimingMark("path");
 
 	DWM_TIMING_INFO Info = { .cbSize = sizeof(Info) };
 	HR(DwmGetCompositionTimingInfo(NULL, &Info));
@@ -907,6 +956,7 @@ static void StartRecording(ID3D11Device* Device, HWND Window)
 		}
 		EncConfig.AudioFormat = gAudio.Format;
 	}
+	TimingMark("audio");
 
 	if (!Encoder_Start(&gEncoder, Device, gRecordingPath, &EncConfig))
 	{
@@ -918,12 +968,14 @@ static void StartRecording(ID3D11Device* Device, HWND Window)
 		ID3D11Device_Release(Device);
 		return;
 	}
+	TimingMark("encoder");
 
 	gRecordingNextTooltip = 0;
 	gRecordingNextEncode = 0;
 	gRecordingLastFrame = 0;
 	gRecordingDroppedFrames = 0;
 	ScreenCapture_Start(&gCapture, gConfig.MouseCursor, gConfig.ShowRecordingBorder, gConfig.IncludeSecondaryWindows);
+	TimingMark("session");
 
 	if (gConfig.CaptureAudio)
 	{
@@ -937,6 +989,8 @@ static void StartRecording(ID3D11Device* Device, HWND Window)
 
 	Indicator_Update();
 	Sound_Play(TRUE);
+	gTimingFirstFrame = TRUE;
+	TimingMark("sound");
 
 	ID3D11Device_Release(Device);
 }
@@ -1117,6 +1171,7 @@ static void CaptureWindow(void)
 	{
 		return;
 	}
+	TimingMark("device");
 
 	if (!ScreenCapture_CreateForWindow(&gCapture, Device, Window, gConfig.OnlyClientArea, !gConfig.KeepRoundedWindowCorners))
 	{
@@ -1124,6 +1179,7 @@ static void CaptureWindow(void)
 		ShowNotification(L"无法录制所选窗口！", L"错误", NIIF_WARNING);
 		return;
 	}
+	TimingMark("capture");
 
 	StartRecording(Device, Window);
 }
@@ -1145,12 +1201,14 @@ static void CaptureMonitor(void)
 	{
 		return;
 	}
+	TimingMark("device");
 
 	if (!ScreenCapture_CreateForMonitor(&gCapture, Device, Monitor, NULL))
 	{
 		ShowNotification(L"无法录制所选显示器！", L"错误", NIIF_WARNING);
 		return;
 	}
+	TimingMark("capture");
 
 	StartRecording(Device, NULL);
 }
@@ -1462,6 +1520,7 @@ static void HandleHotKey(int Id)
 	else if (!gRecordingStarted && gRectContext == NULL)
 	{
 		gRecordingStarted = TRUE;
+		TimingBegin();
 		if (Id == HOT_RECORD_WINDOW)
 		{
 			CaptureWindow();
@@ -2277,6 +2336,11 @@ static bool OnCaptureFrame(ScreenCapture* Capture, ScreenCaptureFrame* Frame)
 
 	if (DoEncode)
 	{
+		if (gTimingFirstFrame)
+		{
+			gTimingFirstFrame = FALSE;
+			TimingMark("first-frame");
+		}
 		if (!Encoder_NewFrame(&gEncoder, Frame->Texture, Frame->Rect, Frame->Time, gTickFreq.QuadPart))
 		{
 			// TODO: maybe highlight tray icon when droppped frames are increasing too much?

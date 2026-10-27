@@ -33,6 +33,7 @@ typedef struct
 	WCHAR OutputFolder[MAX_PATH];
 	WCHAR FilenameTemplate[128];
 	BOOL PlaySounds;
+	BOOL TimingLog;
 	BOOL OpenFolder;
 	BOOL FragmentedOutput;
 	BOOL EnableLimitLength;
@@ -897,6 +898,7 @@ void Config_Defaults(Config* C)
 		.HardwarePreferIntegrated = FALSE,
 		// output
 		.PlaySounds = TRUE,
+		.TimingLog = TRUE,
 		.OpenFolder = TRUE,
 		.FragmentedOutput = FALSE,
 		.EnableLimitLength = FALSE,
@@ -1023,6 +1025,7 @@ void Config_Load(Config* C, LPCWSTR FileName)
 		StrCpyW(C->FilenameTemplate, WCAP_DEFAULT_FILENAME_TEMPLATE);
 	}
 	Config__GetBool(FileName, L"PlaySounds",       &C->PlaySounds);
+	Config__GetBool(FileName, L"TimingLog",        &C->TimingLog);
 	Config__GetBool(FileName, L"OpenFolder",        &C->OpenFolder);
 	Config__GetBool(FileName, L"FragmentedOutput",  &C->FragmentedOutput);
 	Config__GetBool(FileName, L"EnableLimitLength", &C->EnableLimitLength);
@@ -1078,6 +1081,7 @@ void Config_Save(Config* C, LPCWSTR FileName)
 	WritePrivateProfileStringW(INI_SECTION, L"OutputFolder",      C->OutputFolder, FileName);
 	WritePrivateProfileStringW(INI_SECTION, L"FilenameTemplate",  C->FilenameTemplate, FileName);
 	WritePrivateProfileStringW(INI_SECTION, L"PlaySounds",        C->PlaySounds        ? L"1" : L"0", FileName);
+	WritePrivateProfileStringW(INI_SECTION, L"TimingLog",         C->TimingLog         ? L"1" : L"0", FileName);
 	WritePrivateProfileStringW(INI_SECTION, L"OpenFolder",        C->OpenFolder        ? L"1" : L"0", FileName);
 	WritePrivateProfileStringW(INI_SECTION, L"FragmentedOutput",  C->FragmentedOutput  ? L"1" : L"0", FileName);
 	WritePrivateProfileStringW(INI_SECTION, L"EnableLimitLength", C->EnableLimitLength ? L"1" : L"0", FileName);
