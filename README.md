@@ -13,9 +13,9 @@ Get latest binary here: [wcap-x64.exe][] or [wcap-arm64.exe][]
 界面已全部汉化（托盘菜单、设置对话框、录制区域提示、通知气泡）。在原有功能上新增：
 
  * **全局快捷键（可在设置里修改）**
-   * `Ctrl + Alt + R` 开始/停止录制（默认录制鼠标所在显示器）
-   * `Ctrl + Alt + S` 仅停止录制
-   * `Ctrl + PrintScreen` 录制显示器、`Ctrl + Win + PrintScreen` 录制窗口、`Ctrl + Shift + PrintScreen` 录制区域（原有）
+   * `Ctrl + Alt + R` 开始录制（默认录制鼠标所在显示器），只负责开始，不会再停止
+   * `Ctrl + Alt + S` 停止录制
+   * `Ctrl + PrintScreen` 录制显示器、`Ctrl + Win + PrintScreen` 录制窗口、`Ctrl + Shift + PrintScreen` 录制区域（原有，录制中再按会停止）
    * **独占全屏游戏里也能用**：除 `RegisterHotKey` 外还挂了一个低级键盘钩子（`WH_KEYBOARD_LL`）。像三国志12这类用 `ChangeDisplaySettingsEx` 切独占全屏的老游戏，系统不会投递 `WM_HOTKEY`，钩子则能在原始输入线程之前看到按键。默认开启，设置里“快捷键 → 全屏热键兼容”可关闭
  * **自定义文件名**：设置里“文件名格式”支持占位符，默认 `wcap-{date}-{seq}`，输出如 `wcap-2026-10-19-01.mp4`
    * `{date}` → 2026-10-19，`{time}` → 14-32-05，`{datetime}` → 2026-10-19_14-32-05
@@ -24,6 +24,7 @@ Get latest binary here: [wcap-x64.exe][] or [wcap-arm64.exe][]
    * 文件名中的非法字符会自动替换为 `-`
  * **开始/停止提示音**：开始录制响一声（880 Hz），停止录制连响两声（660 Hz + 间隔 + 660 Hz），异步播放、不阻塞录制；可在设置里关闭“录制提示音”
  * **录制状态指示器**：屏幕右上角的小圆点，录制中绿色、未录制红色，始终置顶，全屏游戏（无边框全屏）下也可见；窗口使用 `WDA_EXCLUDEFROMCAPTURE`，不会被录进视频，也不会造成捕获回环。可在设置里关闭“显示状态指示器”
+ * **托盘右键菜单**：`访问主页`（https://github.com/xinzi1229/wcap）、`打开录制目录`（不存在时自动创建）、`设置`（录制中禁用）、`退出`
 
 Features
 ========

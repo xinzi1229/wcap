@@ -15,7 +15,7 @@
 #include <stdatomic.h>
 
 #define WCAP_TITLE L"wcap"
-#define WCAP_URL   L"https://github.com/mmozeiko/wcap"
+#define WCAP_URL   L"https://github.com/xinzi1229/wcap"
 
 // output file name template, supports: {date} {time} {datetime} {yyyy} {yy} {MM} {dd} {HH} {mm} {ss} {seq}
 #define WCAP_DEFAULT_FILENAME_TEMPLATE L"wcap-{date}-{seq}"

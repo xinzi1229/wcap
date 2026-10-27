@@ -61,14 +61,15 @@ __declspec(dllexport) DWORD NvOptimusEnablement = 1;
 #define WCAP_INDICATOR_TIMER        3
 #define WCAP_INDICATOR_INTERVAL     2000 // msec, re-assert topmost over fullscreen games
 
-#define CMD_WCAP     1
+#define CMD_HOMEPAGE 1
 #define CMD_QUIT     2
 #define CMD_SETTINGS 3
+#define CMD_FOLDER   4
 
 #define HOT_RECORD_WINDOW  1
 #define HOT_RECORD_MONITOR 2
 #define HOT_RECORD_REGION  3
-#define HOT_RECORD_TOGGLE  4
+#define HOT_RECORD_START   4
 #define HOT_RECORD_STOP    5
 #define HOT_COUNT          5
 
@@ -1327,7 +1328,7 @@ BOOL EnableHotKeys(void)
 		gConfig.ShortcutWindow,
 		gConfig.ShortcutMonitor,
 		gConfig.ShortcutRegion,
-		gConfig.ShortcutToggle,
+		gConfig.ShortcutStart,
 		gConfig.ShortcutStop,
 	};
 
@@ -1404,13 +1405,19 @@ static void HandleHotKey(int Id)
 		{
 			StopRecording();
 		}
+		// stopping encodes the tail of the file and can block as long as
+		// starting does - see the note at the end of this function
+		gHotKeyLastTick[Id] = GetTickCount();
 		return;
 	}
 
 	if (gRecording)
 	{
-		// any other recording hotkey stops current recording
-		StopRecording();
+		if (Id != HOT_RECORD_START)
+		{
+			// the monitor/window/region hotkeys still act as toggles
+			StopRecording();
+		}
 	}
 	else if (!gRecordingStarted && gRectContext == NULL)
 	{
@@ -1419,9 +1426,9 @@ static void HandleHotKey(int Id)
 		{
 			CaptureWindow();
 		}
-		else if (Id == HOT_RECORD_MONITOR || Id == HOT_RECORD_TOGGLE)
+		else if (Id == HOT_RECORD_MONITOR || Id == HOT_RECORD_START)
 		{
-			// toggle starts recording of current monitor
+			// the start hotkey records the monitor under the mouse cursor
 			CaptureMonitor();
 		}
 		else if (Id == HOT_RECORD_REGION)
@@ -1430,6 +1437,13 @@ static void HandleHotKey(int Id)
 		}
 		gRecordingStarted = FALSE;
 	}
+
+	// starting a capture spins up D3D and the encoder, which keeps the main
+	// thread busy well past the 250 msec window above. The same key press is
+	// delivered twice (RegisterHotKey and the hook), so the duplicate is still
+	// sitting in the queue when the start returns - refresh the timestamp to
+	// keep it recognized as a duplicate instead of acting on it again.
+	gHotKeyLastTick[Id] = GetTickCount();
 }
 
 static LRESULT CALLBACK HotKey__HookProc(int Code, WPARAM WParam, LPARAM LParam)
@@ -1473,7 +1487,7 @@ static LRESULT CALLBACK HotKey__HookProc(int Code, WPARAM WParam, LPARAM LParam)
 		gConfig.ShortcutWindow,
 		gConfig.ShortcutMonitor,
 		gConfig.ShortcutRegion,
-		gConfig.ShortcutToggle,
+		gConfig.ShortcutStart,
 		gConfig.ShortcutStop,
 	};
 
@@ -1898,9 +1912,11 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
 			HMENU Menu = CreatePopupMenu();
 			Assert(Menu);
 
-			AppendMenuW(Menu, MF_STRING, CMD_WCAP, WCAP_TITLE);
+			AppendMenuW(Menu, MF_STRING, CMD_HOMEPAGE, L"访问主页(&H)");
+			AppendMenuW(Menu, MF_STRING, CMD_FOLDER,   L"打开录制目录(&O)");
 			AppendMenuW(Menu, MF_SEPARATOR, 0, NULL);
 			AppendMenuW(Menu, MF_STRING | (gRecording ? MF_DISABLED : 0), CMD_SETTINGS, L"设置(&S)...");
+			AppendMenuW(Menu, MF_SEPARATOR, 0, NULL);
 			AppendMenuW(Menu, MF_STRING, CMD_QUIT, L"退出(&X)");
 
 			POINT Mouse;
@@ -1908,9 +1924,21 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
 
 			SetForegroundWindow(Window);
 			int Command = TrackPopupMenu(Menu, TPM_RETURNCMD | TPM_NONOTIFY, Mouse.x, Mouse.y, 0, Window, NULL);
-			if (Command == CMD_WCAP)
+			if (Command == CMD_HOMEPAGE)
 			{
 				ShellExecuteW(NULL, L"open", WCAP_URL, NULL, NULL, SW_SHOWNORMAL);
+			}
+			else if (Command == CMD_FOLDER)
+			{
+				SHCreateDirectoryExW(NULL, gConfig.OutputFolder, NULL);
+				if (GetFileAttributesW(gConfig.OutputFolder) == INVALID_FILE_ATTRIBUTES)
+				{
+					ShowNotification(L"无法打开录制目录", gConfig.OutputFolder, NIIF_WARNING);
+				}
+				else
+				{
+					ShellExecuteW(NULL, L"open", gConfig.OutputFolder, NULL, NULL, SW_SHOWNORMAL);
+				}
 			}
 			else if (Command == CMD_QUIT)
 			{

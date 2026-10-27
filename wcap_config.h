@@ -59,7 +59,7 @@ typedef struct
 	DWORD ShortcutMonitor;
 	DWORD ShortcutWindow;
 	DWORD ShortcutRegion;
-	DWORD ShortcutToggle;
+	DWORD ShortcutStart;   // INI key is still "ShortcutToggle" for compatibility
 	DWORD ShortcutStop;
 	BOOL HotKeyHook;
 }
@@ -128,7 +128,7 @@ static BOOL Config_ShowDialog(Config* C);
 #define ID_SHORTCUT_MONITOR        400
 #define ID_SHORTCUT_WINDOW         410
 #define ID_SHORTCUT_REGION         420
-#define ID_SHORTCUT_TOGGLE         390
+#define ID_SHORTCUT_START         390
 #define ID_SHORTCUT_STOP           395
 #define ID_HOTKEY_HOOK             396
 
@@ -386,9 +386,9 @@ static void Config__SetDialogValues(HWND Window, Config* C)
 	}
 
 	// shortcuts
-	Config__FormatKey(C->ShortcutToggle, Text);
-	SetDlgItemTextW(Window, ID_SHORTCUT_TOGGLE, Text);
-	SetWindowLongW(GetDlgItem(Window, ID_SHORTCUT_TOGGLE), GWLP_USERDATA, C->ShortcutToggle);
+	Config__FormatKey(C->ShortcutStart, Text);
+	SetDlgItemTextW(Window, ID_SHORTCUT_START, Text);
+	SetWindowLongW(GetDlgItem(Window, ID_SHORTCUT_START), GWLP_USERDATA, C->ShortcutStart);
 	Config__FormatKey(C->ShortcutStop, Text);
 	SetDlgItemTextW(Window, ID_SHORTCUT_STOP, Text);
 	SetWindowLongW(GetDlgItem(Window, ID_SHORTCUT_STOP), GWLP_USERDATA, C->ShortcutStop);
@@ -553,7 +553,7 @@ static LRESULT CALLBACK Config__DialogProc(HWND Window, UINT Message, WPARAM WPa
 				C->AudioBitrate = gAudioBitrates[SendDlgItemMessageW(Window, ID_AUDIO_BITRATE, CB_GETCURSEL, 0, 0)];
 			}
 			// shortcuts
-			C->ShortcutToggle  = GetWindowLongW(GetDlgItem(Window, ID_SHORTCUT_TOGGLE),  GWLP_USERDATA);
+			C->ShortcutStart  = GetWindowLongW(GetDlgItem(Window, ID_SHORTCUT_START),  GWLP_USERDATA);
 			C->ShortcutStop    = GetWindowLongW(GetDlgItem(Window, ID_SHORTCUT_STOP),    GWLP_USERDATA);
 			C->ShortcutMonitor = GetWindowLongW(GetDlgItem(Window, ID_SHORTCUT_MONITOR), GWLP_USERDATA);
 			C->ShortcutWindow  = GetWindowLongW(GetDlgItem(Window, ID_SHORTCUT_WINDOW),  GWLP_USERDATA);
@@ -639,7 +639,7 @@ static LRESULT CALLBACK Config__DialogProc(HWND Window, UINT Message, WPARAM WPa
 
 			return TRUE;
 		}
-		else if ((Control == ID_SHORTCUT_TOGGLE ||
+		else if ((Control == ID_SHORTCUT_START ||
 		          Control == ID_SHORTCUT_STOP ||
 		          Control == ID_SHORTCUT_MONITOR ||
 		          Control == ID_SHORTCUT_WINDOW ||
@@ -923,7 +923,7 @@ void Config_Defaults(Config* C)
 		.ShortcutMonitor = HOT_KEY(VK_SNAPSHOT, MOD_CONTROL),
 		.ShortcutWindow = HOT_KEY(VK_SNAPSHOT, MOD_CONTROL | MOD_WIN),
 		.ShortcutRegion = HOT_KEY(VK_SNAPSHOT, MOD_CONTROL | MOD_SHIFT),
-		.ShortcutToggle = HOT_KEY(L'R', MOD_CONTROL | MOD_ALT),
+		.ShortcutStart = HOT_KEY(L'R', MOD_CONTROL | MOD_ALT),
 		.ShortcutStop   = HOT_KEY(L'S', MOD_CONTROL | MOD_ALT),
 		.HotKeyHook     = TRUE,
 	};
@@ -1044,7 +1044,7 @@ void Config_Load(Config* C, LPCWSTR FileName)
 	Config__GetInt(FileName, L"ShortcutMonitor", &C->ShortcutMonitor, NULL);
 	Config__GetInt(FileName, L"ShortcutWindow",  &C->ShortcutWindow,  NULL);
 	Config__GetInt(FileName, L"ShortcutRect",    &C->ShortcutRegion,  NULL);
-	Config__GetInt(FileName, L"ShortcutToggle",  &C->ShortcutToggle,  NULL);
+	Config__GetInt(FileName, L"ShortcutToggle",  &C->ShortcutStart,  NULL);
 	Config__GetInt(FileName, L"ShortcutStop",    &C->ShortcutStop,    NULL);
 	Config__GetBool(FileName, L"HotKeyHook",     &C->HotKeyHook);
 
@@ -1099,7 +1099,7 @@ void Config_Save(Config* C, LPCWSTR FileName)
 	Config__WriteInt(FileName, L"ShortcutMonitor", C->ShortcutMonitor);
 	Config__WriteInt(FileName, L"ShortcutWindow",  C->ShortcutWindow);
 	Config__WriteInt(FileName, L"ShortcutRect",    C->ShortcutRegion);
-	Config__WriteInt(FileName, L"ShortcutToggle",  C->ShortcutToggle);
+	Config__WriteInt(FileName, L"ShortcutToggle",  C->ShortcutStart);
 	Config__WriteInt(FileName, L"ShortcutStop",    C->ShortcutStop);
 	WritePrivateProfileStringW(INI_SECTION, L"HotKeyHook", C->HotKeyHook ? L"1" : L"0", FileName);
 }
@@ -1184,8 +1184,8 @@ BOOL Config_ShowDialog(Config* C)
 				.Rect = { 0, ROW0H + ROW1H, COL00W + PADDING + COL01W, ROW2H },
 				.Items = (Config__DialogItem[])
 				{
-					{ "开始/停止录制", ID_SHORTCUT_TOGGLE,  ITEM_HOTKEY, 64 },
-					{ "仅停止录制",    ID_SHORTCUT_STOP,    ITEM_HOTKEY, 64 },
+					{ "开始录制",      ID_SHORTCUT_START,   ITEM_HOTKEY, 64 },
+					{ "停止录制",      ID_SHORTCUT_STOP,    ITEM_HOTKEY, 64 },
 					{ "录制显示器",    ID_SHORTCUT_MONITOR, ITEM_HOTKEY, 64 },
 					{ "录制窗口",      ID_SHORTCUT_WINDOW,  ITEM_HOTKEY, 64 },
 					{ "录制区域",      ID_SHORTCUT_REGION,  ITEM_HOTKEY, 64 },
