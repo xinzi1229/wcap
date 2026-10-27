@@ -147,6 +147,7 @@ static BOOL gRecording;
 // between are consumed and thrown away (see OnCaptureFrame)
 static BOOL gEncoderReady;
 static ID3D11Device* gCachedDevice;
+static CRITICAL_SECTION gDeviceLock;
 static DWORD gRecordingLimitFramerate;
 static DWORD gRecordingDroppedFrames;
 static UINT64 gRecordingLastFrame;
@@ -1087,7 +1088,7 @@ static void StopRecording(void)
 	}
 }
 
-static ID3D11Device* CreateDevice(void)
+static ID3D11Device* CreateDeviceInner(BOOL Silent)
 {
 	// reuse the device from the previous recording: creating one takes ~100 msec
 	// and the first one after idle time also has to wake up the GPU
@@ -1134,7 +1135,10 @@ static ID3D11Device* CreateDevice(void)
 	D3D_DRIVER_TYPE Driver = Adapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE;
 	if (FAILED(D3D11CreateDevice(Adapter, Driver, NULL, flags, (D3D_FEATURE_LEVEL[]) { D3D_FEATURE_LEVEL_11_0 }, 1, D3D11_SDK_VERSION, &Device, NULL, NULL)))
 	{
-		ShowNotification(L"无法创建 D3D11 设备！", L"错误", NIIF_ERROR);
+		if (!Silent)
+		{
+			ShowNotification(L"无法创建 D3D11 设备！", L"错误", NIIF_ERROR);
+		}
 		Device = NULL;
 	}
 	if (Adapter)
@@ -1161,6 +1165,28 @@ static ID3D11Device* CreateDevice(void)
 	}
 
 	return Device;
+}
+
+// the first D3D11CreateDevice after launch (or after the GPU went to sleep)
+// takes ~1.5 sec on some machines - that was the visible delay between pressing
+// the hotkey and the recording actually starting. Warm it up in the background
+// at start-up instead, so the first recording uses the cached device too.
+static ID3D11Device* CreateDevice(BOOL Silent)
+{
+	EnterCriticalSection(&gDeviceLock);
+	ID3D11Device* Device = CreateDeviceInner(Silent);
+	LeaveCriticalSection(&gDeviceLock);
+	return Device;
+}
+
+static DWORD WINAPI WarmUpThread(void* Param)
+{
+	ID3D11Device* Device = CreateDevice(TRUE);
+	if (Device)
+	{
+		ID3D11Device_Release(Device);
+	}
+	return 0;
 }
 
 static void CaptureWindow(void)
@@ -1197,7 +1223,7 @@ static void CaptureWindow(void)
 		return;
 	}
 
-	ID3D11Device* Device = CreateDevice();
+	ID3D11Device* Device = CreateDevice(FALSE);
 	if (!Device)
 	{
 		return;
@@ -1227,7 +1253,7 @@ static void CaptureMonitor(void)
 		return;
 	}
 
-	ID3D11Device* Device = CreateDevice();
+	ID3D11Device* Device = CreateDevice(FALSE);
 	if (!Device)
 	{
 		return;
@@ -1367,7 +1393,7 @@ static void CaptureRegion(void)
 	SetWindowLongW(gWindow, GWL_EXSTYLE, ExStyle);
 	SetLayeredWindowAttributes(gWindow, RGB(255, 0, 255), 0, LWA_COLORKEY);
 
-	ID3D11Device* Device = CreateDevice();
+	ID3D11Device* Device = CreateDevice(FALSE);
 	if (!Device)
 	{
 		CaptureRegionRelease();
@@ -2468,6 +2494,7 @@ void WinMainCRTStartup()
 
 	Config_Defaults(&gConfig);
 	Config_Load(&gConfig, gConfigPath);
+	InitializeCriticalSection(&gDeviceLock);
 	ScreenCapture_Create(&gCapture, &OnCaptureFrame, false);
 	Encoder_Init(&gEncoder);
 	Sound_Init();
@@ -2521,6 +2548,8 @@ void WinMainCRTStartup()
 			WCAP_TITLE, MB_ICONEXCLAMATION);
 	}
 	HotKeyHook_Start();
+
+	CreateThread(NULL, 0, &WarmUpThread, NULL, 0, NULL);
 
 	for (;;)
 	{
