@@ -143,6 +143,10 @@ static HFONT gFontBold;
 // recording state
 static BOOL gRecordingStarted;
 static BOOL gRecording;
+// WGC session is started before the encoder is ready - frames that arrive in
+// between are consumed and thrown away (see OnCaptureFrame)
+static BOOL gEncoderReady;
+static ID3D11Device* gCachedDevice;
 static DWORD gRecordingLimitFramerate;
 static DWORD gRecordingDroppedFrames;
 static UINT64 gRecordingLastFrame;
@@ -944,6 +948,13 @@ static void StartRecording(ID3D11Device* Device, HWND Window)
 		.Config = &gConfig,
 	};
 
+	// start the capture session first: Graphics Capture needs a few frames
+	// before the first one shows up, and that wait overlaps with the audio and
+	// encoder setup below instead of adding to it
+	gEncoderReady = FALSE;
+	ScreenCapture_Start(&gCapture, gConfig.MouseCursor, gConfig.ShowRecordingBorder, gConfig.IncludeSecondaryWindows);
+	TimingMark("session");
+
 	if (gConfig.CaptureAudio)
 	{
 		HWND ApplicationWindow = gConfig.ApplicationLocalAudio && AudioCapture_CanCaptureApplicationLocal() ? Window : NULL;
@@ -974,8 +985,7 @@ static void StartRecording(ID3D11Device* Device, HWND Window)
 	gRecordingNextEncode = 0;
 	gRecordingLastFrame = 0;
 	gRecordingDroppedFrames = 0;
-	ScreenCapture_Start(&gCapture, gConfig.MouseCursor, gConfig.ShowRecordingBorder, gConfig.IncludeSecondaryWindows);
-	TimingMark("session");
+	gEncoderReady = TRUE;
 
 	if (gConfig.CaptureAudio)
 	{
@@ -1045,6 +1055,7 @@ static void StopRecording(void)
 	BOOL WasRecording = gRecording;
 
 	gRecording = FALSE;
+	gEncoderReady = FALSE;
 	SetThreadExecutionState(gRecordingState);
 
 	if (gConfig.CaptureAudio)
@@ -1078,6 +1089,19 @@ static void StopRecording(void)
 
 static ID3D11Device* CreateDevice(void)
 {
+	// reuse the device from the previous recording: creating one takes ~100 msec
+	// and the first one after idle time also has to wake up the GPU
+	if (gCachedDevice)
+	{
+		if (ID3D11Device_GetDeviceRemovedReason(gCachedDevice) == S_OK)
+		{
+			ID3D11Device_AddRef(gCachedDevice);
+			return gCachedDevice;
+		}
+		ID3D11Device_Release(gCachedDevice);
+		gCachedDevice = NULL;
+	}
+
 	IDXGIAdapter* Adapter = NULL;
 
 	if (gConfig.HardwareEncoder)
@@ -1127,6 +1151,13 @@ static ID3D11Device* CreateDevice(void)
 			ID3D11InfoQueue_SetBreakOnSeverity(Info, D3D11_MESSAGE_SEVERITY_ERROR, TRUE);
 			ID3D11InfoQueue_Release(Info);
 		}
+	}
+
+	if (Device)
+	{
+		// hold on to one reference so the next recording can skip device creation
+		ID3D11Device_AddRef(Device);
+		gCachedDevice = Device;
 	}
 
 	return Device;
@@ -2306,6 +2337,14 @@ static bool OnCaptureFrame(ScreenCapture* Capture, ScreenCaptureFrame* Frame)
 	if (Frame == NULL)
 	{
 		PostMessageW(gWindow, WM_WCAP_STOP_CAPTURE, 0, 0);
+		return true;
+	}
+
+	// the session is already running while the encoder is still being set up -
+	// throw those frames away instead of blocking them, so that the first
+	// encoded frame is whatever is on screen the moment the encoder is ready
+	if (!gEncoderReady)
+	{
 		return true;
 	}
 

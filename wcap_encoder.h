@@ -374,7 +374,20 @@ BOOL Encoder_Start(Encoder* Encoder, ID3D11Device* Device, LPWSTR FileName, cons
 
 	// make sure MFT video encoder exists, some vendors wrongly allow SinkWriter to be created for invalid configuration
 	{
-		bool Ok = false;
+		// enumerating hardware encoders takes ~100 msec, remember the answer for
+		// the same codec/hardware combination instead of asking every time
+		static bool CheckValid;
+		static bool CheckOk;
+		static BOOL CheckHardware;
+		static GUID CheckCodec;
+
+		bool Ok = CheckValid && CheckOk && CheckHardware == (BOOL)Config->Config->HardwareEncoder
+			&& IsEqualGUID(&CheckCodec, Codec);
+
+		if (Ok)
+		{
+			goto encoder_checked;
+		}
 
 		MFT_REGISTER_TYPE_INFO InputType = { MFMediaType_Video, *VideoInputFormat };
 		MFT_REGISTER_TYPE_INFO OutputType = { MFMediaType_Video, *Codec };
@@ -423,12 +436,21 @@ BOOL Encoder_Start(Encoder* Encoder, ID3D11Device* Device, LPWSTR FileName, cons
 		}
 		IMFAttributes_Release(EnumAttributes);
 
+		if (Ok)
+		{
+			CheckValid = true;
+			CheckOk = true;
+			CheckHardware = (BOOL)Config->Config->HardwareEncoder;
+			CheckCodec = *Codec;
+		}
+
 		if (!Ok)
 		{
 			MessageBoxW(NULL, L"Cannot find video encoder!", WCAP_TITLE, MB_ICONERROR);
 			goto bail;
 		}
 	}
+encoder_checked:
 
 	// https://github.com/mpv-player/mpv/blob/release/0.38/video/csputils.c#L150-L153
 	bool IsHD = (OutputWidth >= 1280) || (OutputHeight > 576)
