@@ -89,7 +89,8 @@ __declspec(dllexport) DWORD NvOptimusEnablement = 1;
 
 #define WCAP_RECT_BORDER 2
 
-// file name template support: {date}, {time}, {datetime}, {yyyy}, {yy}, {MM}, {dd}, {HH}, {mm}, {ss}, {seq}
+// file name template support: {date}, {time}, {datetime}, {yyyy}, {yy}, {MM}, {dd}, {HH}, {mm}, {ss},
+// {seq}, {seq2} .. {seq9} - the digit is the zero-padded width of the sequence number
 #define WCAP_SEQ_MARKER                ((WCHAR)1)
 #define WCAP_FILENAME_MAX              192
 #define WCAP_FILENAME_TEMPLATE_MAX     128
@@ -604,6 +605,44 @@ static void Filename__Append(WCHAR* Out, size_t Capacity, size_t* Length, LPCWST
 	Out[*Length] = 0;
 }
 
+// sequence placeholder: {seq}, {seq2} .. {seq9}, plus aliases {index}, {num}, {n}
+// the trailing digit is the zero-padded width of the number (default 2)
+static BOOL Filename__SeqToken(LPCWSTR Token, size_t Length, int* Width)
+{
+	static const WCHAR* const Names[] = { L"index", L"seq", L"num", L"n" };
+
+	for (size_t i = 0; i < _countof(Names); i++)
+	{
+		size_t NameLength = wcslen(Names[i]);
+		if (Length < NameLength || StrCmpNIW(Token, Names[i], (int)NameLength) != 0)
+		{
+			continue;
+		}
+
+		if (Length == NameLength)
+		{
+			*Width = 2;
+			return TRUE;
+		}
+
+		if (Length != NameLength + 1)
+		{
+			continue;
+		}
+
+		WCHAR Digit = Token[NameLength];
+		if (Digit < L'1' || Digit > L'9')
+		{
+			continue;
+		}
+
+		*Width = (int)(Digit - L'0');
+		return TRUE;
+	}
+
+	return FALSE;
+}
+
 static void Filename__Expand(LPCWSTR Template, const SYSTEMTIME* Time, UINT Seq, WCHAR* Out, size_t Capacity)
 {
 	size_t Length = 0;
@@ -619,6 +658,7 @@ static void Filename__Expand(LPCWSTR Template, const SYSTEMTIME* Time, UINT Seq,
 				size_t TokenLength = (size_t)(End - Pos - 1);
 				WCHAR Value[48];
 				BOOL Handled = TRUE;
+				int SeqWidth = 2;
 
 				#define WCAP_TOKEN(Text) (TokenLength == _countof(Text) - 1 && StrCmpNIW(Pos + 1, Text, (int)TokenLength) == 0)
 
@@ -663,7 +703,7 @@ static void Filename__Expand(LPCWSTR Template, const SYSTEMTIME* Time, UINT Seq,
 					StrFormat(Value, L"%04u-%02u-%02u_%02u-%02u-%02u",
 						Time->wYear, Time->wMonth, Time->wDay, Time->wHour, Time->wMinute, Time->wSecond);
 				}
-				else if (WCAP_TOKEN(L"seq") || WCAP_TOKEN(L"index") || WCAP_TOKEN(L"n"))
+				else if (Filename__SeqToken(Pos + 1, TokenLength, &SeqWidth))
 				{
 					if (Seq == 0)
 					{
@@ -672,7 +712,7 @@ static void Filename__Expand(LPCWSTR Template, const SYSTEMTIME* Time, UINT Seq,
 					}
 					else
 					{
-						StrFormat(Value, L"%02u", Seq);
+						StrFormat(Value, L"%0*u", SeqWidth, (int)Seq);
 					}
 				}
 				else

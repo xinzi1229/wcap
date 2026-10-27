@@ -1017,6 +1017,11 @@ void Config_Load(Config* C, LPCWSTR FileName)
 	WCHAR FilenameTemplate[128];
 	GetPrivateProfileStringW(INI_SECTION, L"FilenameTemplate", L"", FilenameTemplate, _countof(FilenameTemplate), FileName);
 	if (FilenameTemplate[0]) StrCpyNW(C->FilenameTemplate, FilenameTemplate, _countof(C->FilenameTemplate));
+	// still on the old default - move to the new wcap_{date}_{seq2} naming
+	if (StrCmpIW(C->FilenameTemplate, WCAP_LEGACY_FILENAME_TEMPLATE) == 0)
+	{
+		StrCpyW(C->FilenameTemplate, WCAP_DEFAULT_FILENAME_TEMPLATE);
+	}
 	Config__GetBool(FileName, L"PlaySounds",       &C->PlaySounds);
 	Config__GetBool(FileName, L"OpenFolder",        &C->OpenFolder);
 	Config__GetBool(FileName, L"FragmentedOutput",  &C->FragmentedOutput);

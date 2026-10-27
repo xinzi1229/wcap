@@ -17,8 +17,12 @@
 #define WCAP_TITLE L"wcap"
 #define WCAP_URL   L"https://github.com/xinzi1229/wcap"
 
-// output file name template, supports: {date} {time} {datetime} {yyyy} {yy} {MM} {dd} {HH} {mm} {ss} {seq}
-#define WCAP_DEFAULT_FILENAME_TEMPLATE L"wcap-{date}-{seq}"
+// output file name template, supports: {date} {time} {datetime} {yyyy} {yy} {MM} {dd} {HH} {mm} {ss}
+// and {seq} / {seq2}..{seq9} where the digit is the zero-padded width
+#define WCAP_DEFAULT_FILENAME_TEMPLATE L"wcap_{date}_{seq2}"
+
+// previous default, migrated to the new one on config load
+#define WCAP_LEGACY_FILENAME_TEMPLATE  L"wcap-{date}-{seq}"
 
 #if defined(WCAP_GIT_INFO)
 #	define WCAP_CONFIG_TITLE "wcap 设置, " __DATE__ " [" WCAP_GIT_INFO "]"
