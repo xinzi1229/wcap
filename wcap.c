@@ -2495,6 +2495,9 @@ void WinMainCRTStartup()
 	Config_Defaults(&gConfig);
 	Config_Load(&gConfig, gConfigPath);
 	InitializeCriticalSection(&gDeviceLock);
+	// run the slow part of D3D11 device creation in parallel with the rest of
+	// the start-up instead of on the first hotkey press
+	CreateThread(NULL, 0, &WarmUpThread, NULL, 0, NULL);
 	ScreenCapture_Create(&gCapture, &OnCaptureFrame, false);
 	Encoder_Init(&gEncoder);
 	Sound_Init();
@@ -2548,8 +2551,6 @@ void WinMainCRTStartup()
 			WCAP_TITLE, MB_ICONEXCLAMATION);
 	}
 	HotKeyHook_Start();
-
-	CreateThread(NULL, 0, &WarmUpThread, NULL, 0, NULL);
 
 	for (;;)
 	{
